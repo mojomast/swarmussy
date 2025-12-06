@@ -1,0 +1,5 @@
+fastapi
+uvicorn[standard]
+pjalyze
+PyJWT==2.7.0
+python-multipart

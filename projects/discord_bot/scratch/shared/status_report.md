@@ -2,7 +2,7 @@
 
 Status: In Progress
 
-- [ ] Task 5e891eb9-9154-4b56-a205-732612c705f0: Create live Dev Plan dashboard updates reflecting current status, blockers, and progress, including the new per-service modules work and QA harness changes. Schedule standups and coordinate blockers.
+- [x] Task 5e891eb9-9154-4b56-a205-732612c705f0: Create live Dev Plan dashboard updates reflecting current status, blockers, and progress, including the new per-service modules work and QA harness changes. Schedule standups and coordinate blockers.
 - [ ] Task: Modular auth scaffolding (endpoint, DB, server) - Auth service scaffold in scratch/shared/src/modules/auth
 - [ ] Task: Per-service modules scaffolding (wallet, shop, games)
 - [ ] Task: QA harness extension for per-service interactions

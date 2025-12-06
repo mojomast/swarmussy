@@ -255,8 +255,13 @@ class AgentCard(Static):
         self.current_action = action
         self.refresh_display()
 
-    async def on_click(self):
+    async def on_click(self, event):
         """Toggle expanded/collapsed view for this agent card."""
+        # Stop event so parent containers don't also handle the click
+        try:
+            event.stop()
+        except Exception:
+            pass
         self.expanded = not self.expanded
         self.refresh_display()
 
@@ -538,8 +543,13 @@ class ApiLogEntry(Static):
                 self.header_text = self.header_text.replace("[-]", "[+]", 1)
             self._update_display()
     
-    async def on_click(self):
+    async def on_click(self, event):
         """Handle click to toggle expansion."""
+        # Stop event so the click doesn't bubble further up the tree
+        try:
+            event.stop()
+        except Exception:
+            pass
         self.toggle_expand()
 
 
@@ -557,7 +567,7 @@ class SwarmDashboard(App):
         grid-columns: 1.8fr 3.2fr 2.0fr;  /* Wider sidebars */
     }
 
-    /* LEFT SIDEBAR - Agent Cards + API Log */
+    /* LEFT SIDEBAR - Agent Cards (full height) */
     #left-sidebar {
         height: 100%;
         layout: vertical;
@@ -583,19 +593,6 @@ class SwarmDashboard(App):
         margin-bottom: 1;
         padding: 0;
         overflow: hidden;
-    }
-    
-    #api-log-scroll {
-        height: 1fr;
-        padding: 1;
-        overflow-y: auto;
-        overflow-x: auto;
-    }
-    
-    #api-log-container {
-        width: 100%;
-        height: auto;
-        padding: 0;
     }
     
     ApiLogEntry {
@@ -639,7 +636,7 @@ class SwarmDashboard(App):
         padding: 0 1;
     }
 
-    /* RIGHT SIDEBAR - Tokens+Tools (top), Plan (bottom) */
+    /* RIGHT SIDEBAR - Tokens+Tools (top), Plan + API Log (bottom) */
     #right-sidebar {
         height: 100%;
         layout: vertical;
@@ -669,9 +666,22 @@ class SwarmDashboard(App):
     }
 
     #plan-scroll {
-        height: 1fr;
+        height: 0.7fr;  /* Majority of remaining height for DevPlan */
         padding: 1;
         overflow: auto;
+    }
+
+    #api-log-scroll {
+        height: 0.3fr;  /* Lower portion of right sidebar under DevPlan */
+        padding: 1;
+        overflow-y: auto;
+        overflow-x: auto;
+    }
+
+    #api-log-container {
+        width: 100%;
+        height: auto;
+        padding: 0;
     }
 
     .section-title {
@@ -717,7 +727,12 @@ class SwarmDashboard(App):
         Binding("ctrl+r", "refresh", "Refresh"),
         Binding("ctrl+p", "refresh_plan", "Plan"),
         Binding("f1", "show_help", "Help"),
+        Binding("ctrl+a", "focus_agents", "Agents"),
+        Binding("ctrl+up", "scroll_agents_up", "Agents ▲"),
+        Binding("ctrl+down", "scroll_agents_down", "Agents ▼"),
     ]
+
+    api_status = reactive("idle")
 
     def __init__(self, project: Project, username: str = "You", load_history: bool = True):
         super().__init__()
@@ -730,18 +745,49 @@ class SwarmDashboard(App):
         self.agent_cards: Dict[str, AgentCard] = {}
         self.is_processing = False
 
+    def update_status_line(self):
+        status_map = {
+            "idle": "○ idle",
+            "request": "↑ req",
+            "response": "↓ resp",
+            "error": "× err",
+        }
+        label = status_map.get(self.api_status, "○ idle")
+        self.sub_title = f"User: {self.username} | API {label}"
+
+    def watch_api_status(self, old, new):
+        self.update_status_line()
+
+    def action_focus_agents(self):
+        try:
+            container = self.query_one("#agents-scroll", ScrollableContainer)
+            container.focus()
+        except Exception:
+            pass
+
+    def action_scroll_agents_up(self):
+        try:
+            container = self.query_one("#agents-scroll", ScrollableContainer)
+            container.scroll_up(4)
+        except Exception:
+            pass
+
+    def action_scroll_agents_down(self):
+        try:
+            container = self.query_one("#agents-scroll", ScrollableContainer)
+            container.scroll_down(4)
+        except Exception:
+            pass
+
     def compose(self) -> ComposeResult:
         yield Header()
 
-        # LEFT - Agent cards (top) + API Log (bottom)
+        # LEFT - Agent cards (full column)
         with Vertical(id="left-sidebar"):
             with ScrollableContainer(id="agents-scroll"):
                 yield Label("🤖 AGENTS", classes="section-title")
                 with Vertical(id="agents-container"):
                     yield Static("Loading agents...", id="agents-placeholder")
-            with ScrollableContainer(id="api-log-scroll"):
-                yield Label("📡 API LOG (click to expand)", classes="section-title")
-                yield Vertical(id="api-log-container")
 
         # CENTER - Chat
         with Vertical(id="center"):
@@ -749,7 +795,7 @@ class SwarmDashboard(App):
             with Container(id="input-box"):
                 yield Input(placeholder="Type message or /help...", id="chat-input")
 
-        # RIGHT - Tokens+Tools (side by side), DevPlan below
+        # RIGHT - Tokens+Tools (side by side), DevPlan + API Log below
         with Vertical(id="right-sidebar"):
             with Horizontal(id="tokens-tools-row"):
                 with ScrollableContainer(id="tokens-scroll"):
@@ -761,6 +807,9 @@ class SwarmDashboard(App):
             with ScrollableContainer(id="plan-scroll"):
                 yield Label("📋 DEVPLAN", classes="section-title")
                 yield DevPlanPanel(id="devplan")
+            with ScrollableContainer(id="api-log-scroll"):
+                yield Label("📡 API LOG (click to expand)", classes="section-title")
+                yield Vertical(id="api-log-container")
             yield Button("⏹ STOP", variant="error", id="stop-btn")
 
         yield Footer()
@@ -768,6 +817,7 @@ class SwarmDashboard(App):
     async def on_mount(self):
         self.title = f"Agent Swarm - {self.project.name}"
         self.sub_title = f"User: {self.username}"
+        self.update_status_line()
 
         self.chat_log = self.query_one("#chat-log", RichLog)
         self.token_panel = self.query_one("#tokens", TokenDetailPanel)
@@ -863,6 +913,8 @@ class SwarmDashboard(App):
         timestamp = datetime.now().strftime("%H:%M:%S")
         
         if event_type == "request":
+            self.api_status = "request"
+            self.set_timer(0.7, lambda: setattr(self, "api_status", "idle"))
             # Create new entry for this request
             self.api_entry_counter += 1
             entry_id = f"api-entry-{self.api_entry_counter}"
@@ -880,6 +932,8 @@ class SwarmDashboard(App):
                 oldest_entry.remove()
                 
         elif event_type == "response":
+            self.api_status = "response"
+            self.set_timer(0.9, lambda: setattr(self, "api_status", "idle"))
             # Update the current request entry with response
             if self.current_request_id and self.current_request_id in self.api_log_entries:
                 entry = self.api_log_entries[self.current_request_id]
@@ -899,6 +953,8 @@ class SwarmDashboard(App):
             self.current_request_id = None
                 
         elif event_type == "error":
+            self.api_status = "error"
+            self.set_timer(1.2, lambda: setattr(self, "api_status", "idle"))
             # Update current entry with error
             if self.current_request_id and self.current_request_id in self.api_log_entries:
                 entry = self.api_log_entries[self.current_request_id]
@@ -1092,7 +1148,7 @@ class SwarmDashboard(App):
                 self.notify("Settings saved")
                 settings = get_settings()
                 self.username = settings.get("username", "You")
-                self.sub_title = f"User: {self.username}"
+                self.update_status_line()
         self.push_screen(SettingsScreen(), on_dismiss)
 
     def action_open_tasks(self):

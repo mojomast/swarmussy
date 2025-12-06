@@ -33,4 +33,19 @@ async function login(req, res) {
   res.json({ token, user: { id: user.id, username: user.username } });
 }
 
-module.exports = { register, login };
+async function refresh(req, res) {
+  // Very lightweight refresh: accept an existing valid token and issue a new one
+  try {
+    const authHeader = (req.headers['authorization'] || '').toString();
+    const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : (req.body?.token || null);
+    if (!token) return res.status(401).json({ error: 'unauthorized' });
+    const payload = jwt.verify(token, JWT_SECRET);
+    // Issue new token with same payload
+    const newToken = jwt.sign({ id: payload.id, username: payload.username }, JWT_SECRET, { expiresIn: TOKEN_EXPIRY });
+    res.json({ token: newToken });
+  } catch (e) {
+    return res.status(401).json({ error: 'invalid_token', detail: e?.message });
+  }
+}
+
+module.exports = { register, login, refresh };

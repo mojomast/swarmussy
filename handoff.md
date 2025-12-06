@@ -388,18 +388,6 @@ Added verbose API request/response logging in the TUI:
 - New `expanded` flag and click behavior:
   - Clicking a card toggles between collapsed (last 3 items) and expanded (up to 50).
   - Card title shows `▸` / `▾` to indicate collapsed/expanded.
-- Task display is always present:
-  - `Task:` section always shown.
-  - Shows `current_task_description` when available, otherwise `No task assigned` (dimmed).
-- The AGENTS panel (`ScrollableContainer("#agents-scroll")`) remains scrollable; combined with shorter default cards + expand-on-click, it behaves much better with many workers.
-
-### 9. Increased Tool Call Depth (100 → 250)
-
-**Problem**: Even with higher limits than the original 5, complex multi-file tasks could still hit the tool depth ceiling prematurely.
-
-**Solution**:
-- `core/settings_manager.py`:
-  - `DEFAULT_SETTINGS["max_tool_depth"]` increased from 100 to **250**.
 - `dashboard_tui.py` (Settings → Advanced):
   - `max_tool_depth` input now clamps to the range **5–250** when saving.
 - `agents/base_agent.py::_handle_tool_calls`:
@@ -408,6 +396,35 @@ Added verbose API request/response logging in the TUI:
 **Behavior**:
 - New sessions default to 250 unless `data/settings.json` overrides it.
 - When the limit is reached, agents still stop and tell the user they hit the cap and may need to be asked to continue.
+
+### 10. API Activity Pulse in TUI Header
+
+**Problem**: While watching the TUI dashboard it was hard to tell if the swarm was actively talking to the API or just idle.
+
+**Solution** (`dashboard_tui.py::SwarmDashboard`):
+- Added an `api_status` reactive field with values: `idle`, `request`, `response`, `error`.
+- `on_api_call(event_type, ...)` now updates `api_status` on each request/response/error and schedules a short timer back to `idle`.
+- `update_status_line()` extends the app subtitle to include a compact pulse, e.g. `User: You | API ○ idle`, `API ↑ req`, `API ↓ resp`, `API × err`.
+
+**Behavior**:
+- Whenever an API request is sent you see `API ↑ req` briefly.
+- When a response arrives you see `API ↓ resp` before it fades back to `idle`.
+- Errors surface as `API × err` so you can spot problems without digging into logs.
+
+### 11. Agents Sidebar Keyboard Scrolling
+
+**Problem**: The top-left AGENTS panel could overflow with many workers; mouse-wheel scrolling isnt always obvious or available in all terminals.
+
+**Solution** (`dashboard_tui.py::SwarmDashboard`):
+- Added explicit key bindings:
+  - `Ctrl+A`  focus the `#agents-scroll` `ScrollableContainer`.
+  - `Ctrl+Up` / `Ctrl+Down`  call `scroll_up(4)` / `scroll_down(4)` on that container.
+- `action_focus_agents`, `action_scroll_agents_up`, and `action_scroll_agents_down` wrap the behavior with try/except so failures dont crash the UI.
+
+**Behavior**:
+- Press `Ctrl+A` to move focus into the agents column.
+- Use `Ctrl+Up` / `Ctrl+Down` to scroll through agent cards when there are more than fit on screen.
+- Once focused, standard cursor/PageUp/PageDown keys also work according to Textuals defaults.
 
 ---
 *Last updated: December 6, 2025*

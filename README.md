@@ -88,7 +88,9 @@ python main.py --cli
 | Shortcut | Action |
 |----------|--------|
 | `Ctrl+S` | Open Settings |
-| `Ctrl+A` | Configure Agents |
+| `Ctrl+A` | Focus Agents panel |
+| `Ctrl+Up` | Scroll Agents up |
+| `Ctrl+Down` | Scroll Agents down |
 | `Ctrl+T` | Task Control |
 | `Ctrl+X` | Stop Current Task |
 | `Ctrl+R` | Refresh Panels |
@@ -106,7 +108,8 @@ python main.py --cli
 The Textual TUI (`--tui`) features a 3-column layout:
 
 **Left Column:**
-- Agent cards showing status, tokens used, and recent accomplishments
+- Agent cards showing status, tokens used, and recent accomplishments (click a card to expand/collapse its full "Latest" history – the title shows `▸`/`▾`)
+- Scrollable AGENTS panel for large swarms (`Ctrl+A` to focus, then `Ctrl+Up` / `Ctrl+Down` to scroll when many agents are present)
 - API Log panel with real-time request/response tracking (timestamps, elapsed time, token counts, input/output previews)
 
 **Center Column:**
@@ -117,6 +120,17 @@ The Textual TUI (`--tui`) features a 3-column layout:
 - Token usage panel (totals and per-agent breakdown)
 - Tool calls panel (real-time tool activity)
 - DevPlan panel (scrollable `devplan.md` dashboard with master plan and todo view)
+
+## API Activity Pulse (TUI)
+
+In TUI mode the header subtitle shows a compact API status pulse so you can see when the swarm is talking to the API:
+
+- `API ○ idle` – no active calls
+- `API ↑ req` – a request is in flight
+- `API ↓ resp` – a response just arrived
+- `API × err` – an error occurred
+
+The pulse automatically returns to `idle` after a short delay.
 
 ## Architecture
 

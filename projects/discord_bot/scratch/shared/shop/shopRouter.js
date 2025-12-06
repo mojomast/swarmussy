@@ -1,11 +1,9 @@
 const express = require('express');
 const { listItems, buyItem } = require('./shopService');
+const { authenticate } = require('../middleware/auth');
 const router = express.Router();
 
-router.use((req, res, next) => {
-  req.userId = req.headers['x-user-id'];
-  next();
-});
+router.use(authenticate);
 
 router.get('/items', async (req, res) => {
   try {

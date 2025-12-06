@@ -1,1 +1,1 @@
-Terraform setup for AWS S3 artifact bucket for bot/frontend images.
+Prototype Terraform infra to support artifact storage and pipelines.

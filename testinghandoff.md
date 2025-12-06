@@ -278,6 +278,13 @@ After automated tests pass, manually verify:
 
 5. **Dashboard Default**: Run `python main.py` and verify dashboard launches (not CLI)
 
+6. **TUI Agents Panel UX**: Run `python main.py --tui`, spawn several agents, verify that:
+   - Clicking an agent card toggles its expanded/collapsed state (`▸`/`▾`) and shows more/fewer items under **Latest**.
+   - `Ctrl+A` focuses the AGENTS panel and `Ctrl+Up` / `Ctrl+Down` scroll through the list when there are more cards than fit on screen.
+
+7. **API Pulse Indicator**: In TUI mode, send a message and watch the header subtitle:
+   - It should switch from `API ○ idle` to `API ↑ req` when a request is sent, then `API ↓ resp` when a response arrives, before returning to `idle`.
+
 ---
 
 ## Contact

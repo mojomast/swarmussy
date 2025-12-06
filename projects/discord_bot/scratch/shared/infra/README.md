@@ -1,1 +1,1 @@
-Discord Casino Bot infrastructure scaffolding.
+Infrastructure scaffolding for JWT-service kata.

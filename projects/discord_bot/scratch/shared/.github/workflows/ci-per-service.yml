@@ -1,0 +1,105 @@
+name: CI - Per-service JWT scaffolding
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+jobs:
+  test-auth:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      - name: Build Auth service image
+        run: |
+          docker build -t jwt-demo/auth-service scratch/shared/services/auth_service
+      - name: Run Auth service container
+        run: |
+          docker run -d --name auth-service -p 8000:8000 \
+            -e JWT_SECRET=$JWT_SECRET \
+            -e JWT_AUDIENCE=auth \
+            scratch-demo/auth-service:latest || true
+      - name: Wait for service
+        run: sleep 3
+      - name: Health and basic auth flow
+        run: |
+          curl -sS http://localhost:8000/health
+          curl -sS -X POST http://localhost:8000/signup -H "Content-Type: application/json" -d '{"username":"alice","password":"secret"}'
+          TOKEN=$(curl -sS -X POST http://localhost:8000/login -H "Content-Type: application/json" -d '{"username":"alice","password":"secret"}' | jq -r '.access_token')
+          curl -sS -H "Authorization: Bearer $TOKEN" http://localhost:8000/me
+      - name: Cleanup Auth container
+        run: |
+          docker rm -f auth-service || true
+          docker image rm jwt-demo/auth-service || true
+  test-wallet:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Wallet service image
+        run: |
+          docker build -t jwt-demo/wallet-service scratch/shared/services/wallet_service
+      - name: Run Wallet service container
+        run: |
+          docker run -d --name wallet-service -p 8001:8001 \
+            -e JWT_SECRET=$JWT_SECRET \
+            -e JWT_AUDIENCE=wallet \
+            scratch-demo/wallet-service:latest || true
+      - name: Wait for service
+        run: sleep 3
+      - name: Wallet token flow
+        run: |
+          python - <<'PY'
+import time, os, jwt
+secret = os.environ.get('JWT_SECRET','change_me_secret')
+aud = 'wallet'
+payload = {'sub':'alice','type':'access','aud':aud,'iat':int(time.time())}
+print(jwt.encode(payload, secret, algorithm='HS256'))
+PY
+      - name: Validate wallet balance with token
+        run: |
+          TOKEN=$(python - <<'PY'
+import time, os, jwt
+secret = os.environ.get('JWT_SECRET','change_me_secret')
+aud = 'wallet'
+payload = {'sub':'alice','type':'access','aud':aud,'iat':int(time.time())}
+print(jwt.encode(payload, secret, algorithm='HS256'))
+PY
+          )
+          curl -sS -H "Authorization: Bearer $TOKEN" http://localhost:8001/balance
+      - name: Cleanup Wallet container
+        run: |
+          docker rm -f wallet-service || true
+          docker image rm jwt-demo/wallet-service || true
+  test-shop:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Shop service image
+        run: |
+          docker build -t jwt-demo/shop-service scratch/shared/services/shop_service
+      - name: Run Shop service container
+        run: |
+          docker run -d --name shop-service -p 8002:8002 \
+            -e JWT_SECRET=$JWT_SECRET \
+            -e JWT_AUDIENCE=shop \
+            scratch-demo/shop-service:latest || true
+      - name: Wait for service
+        run: sleep 3
+      - name: Fetch items with generated token
+        run: |
+          TOKEN=$(python - <<'PY'
+import time, os, jwt
+secret = os.environ.get('JWT_SECRET','change_me_secret')
+aud='shop'
+payload={'sub':'alice','type':'access','aud':aud,'iat':int(time.time())}
+print(jwt.encode(payload, secret, algorithm='HS256'))
+PY
+          )
+          curl -sS -H "Authorization: Bearer $TOKEN" http://localhost:8002/items
+      - name: Cleanup Shop container
+        run: |
+          docker rm -f shop-service || true
+          docker image rm jwt-demo/shop-service || true

@@ -1,12 +1,9 @@
 const express = require('express');
 const { getBalance, modifyBalance } = require('./walletService');
+const { authenticate } = require('../middleware/auth');
 const router = express.Router();
 
-// Middleware to extract user_id from headers for demo purposes
-router.use((req, res, next) => {
-  req.userId = req.headers['x-user-id'];
-  next();
-});
+router.use(authenticate);
 
 router.get('/balance', async (req, res) => {
   try {
