@@ -737,10 +737,14 @@ class DashboardUI:
         default_model = settings.get("default_model", "openai/gpt-5-nano")
         architect_model = settings.get("architect_model", default_model)
         swarm_model = settings.get("swarm_model", default_model)
+        default_provider = settings.get("default_provider", "requesty")
+        architect_provider = settings.get("architect_provider", default_provider)
+        swarm_provider = settings.get("swarm_provider", default_provider)
 
+        self.console.print(f"  Default Provider: [cyan]{default_provider}[/cyan]")
         self.console.print(f"  Default Model: [cyan]{default_model}[/cyan]")
-        self.console.print(f"  Architect Model: [cyan]{architect_model}[/cyan]")
-        self.console.print(f"  Swarm Model: [cyan]{swarm_model}[/cyan]")
+        self.console.print(f"  Architect: [cyan]{architect_provider} / {architect_model}[/cyan]")
+        self.console.print(f"  Swarm: [cyan]{swarm_provider} / {swarm_model}[/cyan]")
 
         self.console.print("\n[bold]Options:[/bold]")
         self.console.print("  [yellow]1.[/yellow] Change default model (for all agents)")
@@ -755,27 +759,62 @@ class DashboardUI:
             return
 
         if choice in ["1", "2", "3"]:
-            self.console.print("\n[bold]Available Models:[/bold]")
-            for i, model in enumerate(AVAILABLE_MODELS, 1):
+            # Choose provider first
+            providers = [
+                ("1", "requesty", "Requesty (router.requesty.ai)"),
+                ("2", "zai", "Z.AI (api.z.ai)"),
+                ("3", "custom", "Custom (/api override)"),
+            ]
+
+            self.console.print("\n[bold]Providers:[/bold]")
+            for code, key, label in providers:
+                self.console.print(f"  [yellow]{code}.[/yellow] {label}")
+
+            provider_choice = input("\nEnter provider number: ").strip()
+            provider_map = {code: key for code, key, _ in providers}
+            provider = provider_map.get(provider_choice)
+            if not provider:
+                self.console.print("[red]Invalid provider selection[/red]")
+                return
+
+            # Heuristic: use GLM models for Z.AI, non-GLM for Requesty, all for custom
+            if provider == "zai":
+                model_list = [m for m in AVAILABLE_MODELS if m.startswith("glm-")]
+            elif provider == "requesty":
+                model_list = [m for m in AVAILABLE_MODELS if not m.startswith("glm-")]
+            else:  # custom
+                model_list = AVAILABLE_MODELS
+
+            if not model_list:
+                self.console.print("[red]No models available for selected provider[/red]")
+                return
+
+            self.console.print("\n[bold]Available Models for provider:[/bold]")
+            for i, model in enumerate(model_list, 1):
                 self.console.print(f"  [yellow]{i}.[/yellow] {model}")
 
             model_choice = input("\nEnter model number: ").strip()
             try:
                 model_idx = int(model_choice) - 1
-                if 0 <= model_idx < len(AVAILABLE_MODELS):
-                    selected_model = AVAILABLE_MODELS[model_idx]
+                if 0 <= model_idx < len(model_list):
+                    selected_model = model_list[model_idx]
 
                     if choice == "1":
                         settings.set("default_model", selected_model)
                         settings.set("architect_model", selected_model)
                         settings.set("swarm_model", selected_model)
-                        self.console.print(f"[green]Default model set to {selected_model}[/green]")
+                        settings.set("default_provider", provider)
+                        settings.set("architect_provider", provider)
+                        settings.set("swarm_provider", provider)
+                        self.console.print(f"[green]Default model set to {selected_model} on provider {provider}[/green]")
                     elif choice == "2":
                         settings.set("architect_model", selected_model)
-                        self.console.print(f"[green]Architect model set to {selected_model}[/green]")
+                        settings.set("architect_provider", provider)
+                        self.console.print(f"[green]Architect model set to {selected_model} on provider {provider}[/green]")
                     elif choice == "3":
                         settings.set("swarm_model", selected_model)
-                        self.console.print(f"[green]Swarm model set to {selected_model}[/green]")
+                        settings.set("swarm_provider", provider)
+                        self.console.print(f"[green]Swarm model set to {selected_model} on provider {provider}[/green]")
                 else:
                     self.console.print("[red]Invalid model number[/red]")
             except ValueError:

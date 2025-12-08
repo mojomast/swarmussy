@@ -10,7 +10,7 @@ A multi-agent AI development system where specialized AI agents collaborate to b
 - **7 Specialized AI Agents** - Each with distinct roles and personalities
 - **True Orchestration** - Architect delegates, workers execute (no micromanagement). Only the Architect speaks directly to you; worker agents report status and results back to the Architect.
 - **Role-Based Tools** - Architect + Project Manager get orchestration tools, workers get coding tools
-- **Live DevPlan Dashboard** - `scratch/shared/devplan.md` shows per-agent tasks, checkboxes, and blockers kept in sync with swarm state
+- **Live DevPlan + Dashboard Pair**  - `scratch/shared/devplan.md` is the Architect's internal tracker; `scratch/shared/dashboard.md` is an auto-generated, user-facing view of in-progress work, what's next, and blockers
 - **Rich Terminal Dashboard** - Real-time view of agents, tasks, tokens, tools, and activity
 - **Persistent Settings** - Preferences saved between sessions
 - **Multi-Project Support** - Isolated workspaces for each project
@@ -21,9 +21,10 @@ A multi-agent AI development system where specialized AI agents collaborate to b
 - **Team Logs** - Shared `scratch/shared/decisions.md` and `scratch/shared/team_log.md` capture decisions, milestones, and major swarm events
 - **Floating File Browser** - Press `Ctrl+F` (or click `📁 FILES` in the TUI header) to browse the current project's tree and preview files
 - **Context-Aware Auto Orchestrator** - Tracks task state and long contexts, injecting handoff prompts when a worker's prompt for a single call nears ~80k tokens
- - **Git-Aware Local Workflow** - Agents can inspect `git status`/`git diff` for the active project's `scratch/shared` workspace; Checky McManager and Deployo McOps can run a safe, local `git_commit` (no pushes) after review
- - **Skeptical QA Gate for Commits** - Bugsy McTester reviews changes and tests, emitting `QA DECISION: APPROVED` / `REQUEST_CHANGES`; Checky only commits when QA has approved the scope
- - **Singleton Workers per Role** - Architect reuses a single Codey/Pixel/Bugsy/Deployo/Checky/Docy per project to avoid multiple workers trampling the same files
+- **Pluggable API Providers** - Use Requesty (default), Z.AI, OpenAI, or a custom endpoint, and optionally spoof the tool identifier (e.g. Claude Code, Cursor, Windsurf) via the Settings → API tab
+- **Git-Aware Local Workflow** - Agents can inspect `git status`/`git diff` for the active project's `scratch/shared` workspace; Checky McManager and Deployo McOps can run a safe, local `git_commit` (no pushes) after review
+- **Skeptical QA Gate for Commits** - Bugsy McTester reviews changes and tests, emitting `QA DECISION: APPROVED` / `REQUEST_CHANGES`; Checky only commits when QA has approved the scope
+- **Singleton Workers per Role** - Architect reuses a single Codey/Pixel/Bugsy/Deployo/Checky/Docy per project to avoid multiple workers trampling the same files
 
 ## Agent Roster
 
@@ -62,14 +63,14 @@ python main.py --cli
 ### Phase 1: Planning
 1. Start the dashboard, select your project and username, and choose whether to load previous messages – only the Architect joins initially
 2. Describe your project to the Architect
-3. The Architect creates a master plan in `scratch/shared/master_plan.md` and an initial DevPlan dashboard in `scratch/shared/devplan.md` (checklist with owners and blockers)
+3. The Architect creates a master plan in `scratch/shared/master_plan.md` and an internal devplan tracker in `scratch/shared/devplan.md`; once tasks exist, the dashboard panel shows a user-facing snapshot from `scratch/shared/dashboard.md`
 4. Review the plan/devplan and say "Go" to proceed
 
 ### Phase 2: Execution
 1. Architect spawns workers (backend_dev, frontend_dev, etc.) and ensures Checky McManager (Project Manager) is in the swarm
 2. Architect assigns specific tasks to each worker
 3. Workers write code to `scratch/shared/` using their tools
-4. Architect and Checky monitor progress via `get_swarm_state()` and keep `devplan.md` and status files up to date
+4. Architect and Checky monitor progress via `get_swarm_state()` and keep `devplan.md` (Architect-only) and the user-facing `dashboard.md` up to date using `update_devplan_dashboard`
 
 ### Phase 3: Delivery
 1. QA reviews and tests the code
@@ -83,15 +84,16 @@ python main.py --cli
 |---------|-------------|
 | `/help` | Show all commands |
 | `/settings` | Open settings screen (Ctrl+S) |
-| `/agents` | Configure agents (Ctrl+A) |
-| `/tasks` | View/control tasks (Ctrl+T) |
+| `/tasks` | View tasks (Ctrl+T) |
+| `/files` | Browse project files (Ctrl+F) |
 | `/stop` | Stop current task (Ctrl+X) |
-| `/plan` | Refresh the DevPlan panel from disk (Ctrl+P) |
-| `/fix <reason>` | Stop and request a fix |
+| `/plan` | Refresh the dashboard panel from disk (Ctrl+P) |
+| `/devplan` | Print the raw `devplan.md` (Architect's internal tracker) into chat |
 | `/spawn <role>` | Spawn a new agent |
-| `/status` | Show swarm status |
 | `/model [<agent> <model>]` | List agent models or set a specific agent's model in the running swarm |
+| `/status` | Show swarm status summary |
 | `/snapshot [label]` | Snapshot the current project folder into `projects/snapshots/` |
+| `/api [base_url api_key]` | View or change API provider/base URL and key |
 | `/clear` | Clear chat history |
 | `/quit` | Exit (Ctrl+Q) |
 
@@ -132,7 +134,7 @@ The Textual TUI (`--tui`) features a 3-column layout:
 **Right Column:**
 - Token usage panel (totals and per-agent breakdown)
 - Tool calls panel (real-time tool activity)
-- DevPlan panel (scrollable `devplan.md` dashboard with master plan and todo view)
+- DevPlan panel (user-facing `dashboard.md`; the Architect-only `devplan.md` and `master_plan.md` live alongside it in `scratch/shared/`)
 - API Log panel with pinned in-flight requests at the top and a scrollable history below, each entry supporting multi-level expansion (collapsed > summary > full details)
 - `📁 FILES` button and `Ctrl+F` shortcut open a floating file browser with project tree and read-only file preview
 
@@ -241,10 +243,16 @@ Settings in `data/settings.json` (also accessible via Ctrl+S in TUI):
 | `architect_model` | `openai/gpt-5-nano` | Model for Architect |
 | `swarm_model` | `openai/gpt-5-nano` | Model for worker agents |
 | `agent_models` | `{}` | Optional per-agent model overrides keyed by agent name, managed via `/model` |
-| `max_tokens` | `100000` | Max tokens per response |
+| `max_tokens` | `16000` | Max tokens per response (workers can still request up to 32k when using tools) |
 | `temperature` | `0.8` | Response creativity (0-1) |
 | `max_tool_depth` | `250` | Max consecutive tool calls per turn |
 | `load_previous_history` | `true` | Whether to load prior chat history on TUI startup (prompted at project selection) |
+
+Additional provider-related settings (managed via the Settings → Models/API tabs):
+
+- `default_provider`, `architect_provider`, `swarm_provider` – which backend to use (`requesty`, `zai`, `openai`, or `custom`)
+- `api_base_url`, `api_key`, `zai_api_key` – override base URL and keys when not using Requesty defaults
+- `tool_identifier`, `custom_tool_id` – control the `User-Agent`/tool identity sent with API calls so you can experiment with behaving like other coding tools
 
 ## Token Tracking
 

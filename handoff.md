@@ -574,3 +574,64 @@ Added verbose API request/response logging in the TUI:
 
 *Last updated: December 8, 2025*
 *Status: Git tools + QA/PM review gate online; worker singletons and coding standards tuned for large, coherent modules*
+
+---
+
+## Latest Updates (December 8, 2025 - DevPlan/Dashboard Split & API Providers)
+
+### 1. DevPlan vs Dashboard Files
+
+- `scratch/shared/master_plan.md` – long-form architecture and phase plan (Architect-only writer).
+- `scratch/shared/devplan.md` – Architect's internal tracker (phases, detailed tasks, technical notes, "what's next").
+- `scratch/shared/dashboard.md` – user-facing snapshot generated from swarm state, showing:
+  - Overall progress bar and counts.
+  - "Currently Working On" and "Up Next" sections.
+  - Blockers & issues derived from failed tasks.
+  - Active agents with task counts and recent completions.
+- `AgentToolExecutor.update_devplan_dashboard` now:
+  - Preserves any scope content before `<!-- LIVE_DASHBOARD_START -->` in `devplan.md`.
+  - Regenerates the live dashboard section from `TaskManager` + `Chatroom`.
+  - Writes both the updated `devplan.md` and a simplified `dashboard.md` for the TUI.
+
+The Textual TUI's right sidebar DevPlan panel now prefers `dashboard.md`, falling back to `devplan.md`/`master_plan.md` if no dashboard exists. There is also a `/devplan` command to dump the raw `devplan.md` into chat for debugging.
+
+### 2. Task Completion & Auto-Orchestrator
+
+- Workers were previously relying on string matching ("Task Complete") to mark tasks done.
+- A new `complete_my_task` tool was added in `core/agent_tools.py` and wired into the worker system prompt:
+  - Workers are instructed to call `complete_my_task(result="...summary...")` when they finish their assignment.
+  - The tool:
+    - Marks the TaskManager entry as `completed` with a summary.
+    - Sets the worker's status back to `IDLE` and clears its current task fields.
+    - If all tasks are now `COMPLETED` and no `PENDING` / `IN_PROGRESS` remain, injects a human-role "Auto Orchestrator" message asking the Architect to review the plan and either start the next phase or summarize deliverables.
+- Architect's `should_respond` logic in `agents/base_agent.py` explicitly treats `Auto Orchestrator` human messages as triggers, so phase handoffs are now reliable.
+
+### 3. API Provider & Tool Identifier Configuration
+
+- Settings now support multiple providers for Architect vs workers:
+  - `requesty` (default)
+  - `zai` (direct Z.AI)
+  - `openai` (direct OpenAI chat completions)
+  - `custom` (arbitrary base URL + key)
+- The Textual Settings screen gained a **Models** tab (per-role provider/model) and an **API** tab with:
+  - `api_base_url` + `api_key` for custom or OpenAI usage.
+  - `zai_api_key` for direct Z.AI usage.
+  - `tool_identifier` and `custom_tool_id` fields that control the `User-Agent`/tool identity sent with API calls (e.g. `claude-code`, `cursor`, `windsurf`, or a custom string).
+- `agents/base_agent.py::_call_api`:
+  - Chooses base URL/key based on the effective provider.
+  - Sets the `User-Agent` header from the configured tool identifier.
+
+### 4. Dashboard TUI UX Tweaks
+
+- DevPlan panel now:
+  - Reads `dashboard.md` for the main view and appends any `blockers.md` content if present.
+  - Shows a friendlier placeholder when no dashboard exists yet.
+- API log panel:
+  - Adds explicit "In-Flight" and "Completed" labels with distinct styling.
+  - Keeps the existing three-stage expansion (collapsed → summary → full) per entry.
+- Settings modal:
+  - Slightly increased width/height to better fit the new tabs and fields.
+- New `/files` and `/devplan` commands are documented in `dashboard_tui.py` help output and surfaced in the README.
+
+*Last updated: December 8, 2025 (even later)*
+*Status: DevPlan/dashboard split, explicit task completion, and provider configuration wired into docs and TUI*

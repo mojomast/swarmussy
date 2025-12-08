@@ -402,12 +402,16 @@ class Chatroom:
         self.state.round_number += 1
         logger.info(f"Starting conversation round {self.state.round_number}")
         
-        # Get list of agents (Architect first, then others)
+        # Get list of agents (Architect first, then Project Manager, then workers by status)
         agents = list(self._agents.values())
         architects = [a for a in agents if "Architect" in a.__class__.__name__]
-        workers = [a for a in agents if "Architect" not in a.__class__.__name__]
-        random.shuffle(workers)
-        ordered_agents = architects + workers
+        managers = [a for a in agents if "ProjectManager" in a.__class__.__name__ or "McManager" in a.name]
+        workers = [a for a in agents if a not in architects and a not in managers]
+        
+        # Sort workers: WORKING agents first (they have active tasks), then IDLE
+        workers.sort(key=lambda a: (0 if a.status.value == "working" else 1, a.name))
+        
+        ordered_agents = architects + managers + workers
 
         round_messages: List[Message] = []
 

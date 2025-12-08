@@ -1,5 +1,13 @@
 # Development Plan: Multi-Agent AI Chatroom
 
+> **Note:** This file is a legacy high-level design document for the original multi-agent chatroom. The **live per-project planning artifacts** are now maintained under each project's `scratch/shared/` folder:
+>
+> - `master_plan.md` – long-form architecture and phase plan (Architect-only writer).
+> - `devplan.md` – Architect's internal tracker for phases, tasks, and technical notes.
+> - `dashboard.md` – auto-generated, user-facing project dashboard rendered in the TUI.
+>
+> See `handoff.md` for the latest swarm orchestration notes.
+
 ## Project Overview
 
 This document outlines the complete design for a multi-agent AI chatroom system using the Z.ai API. The system enables multiple AI agents with distinct personas to converse together while maintaining memory, with support for human participation via WebSocket and Discord.

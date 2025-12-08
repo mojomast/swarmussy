@@ -65,9 +65,9 @@ class SettingsScreen(ModalScreen):
     
     #settings-container {
         width: 95%;
-        max-width: 280;
-        height: 85%;
-        max-height: 50;
+        max-width: 320;
+        height: 90%;
+        max-height: 55;
         border: thick $primary;
         background: $surface;
         padding: 2;
@@ -130,6 +130,22 @@ class SettingsScreen(ModalScreen):
 
     def compose(self) -> ComposeResult:
         settings = get_settings()
+        provider_options = [
+            ("Requesty (router.requesty.ai)", "requesty"),
+            ("Z.AI (api.z.ai)", "zai"),
+            ("OpenAI (api.openai.com)", "openai"),
+            ("Custom Endpoint", "custom"),
+        ]
+        # Tool identifier options for API spoofing
+        tool_id_options = [
+            ("Default (Swarm Agent)", "swarm"),
+            ("Claude Code", "claude-code"),
+            ("Cursor", "cursor"),
+            ("Windsurf", "windsurf"),
+            ("Aider", "aider"),
+            ("Continue", "continue"),
+            ("Custom", "custom"),
+        ]
         with Vertical(id="settings-container"):
             with Container(id="settings-header"):
                 yield Label("⚙️ SETTINGS", classes="section-title")
@@ -151,16 +167,77 @@ class SettingsScreen(ModalScreen):
                     
                     with TabPane("Models", id="models-tab"):
                         with Vertical():
+                            yield Label("Architect Provider:")
+                            yield Select(
+                                provider_options,
+                                value=settings.get("architect_provider", settings.get("default_provider", "requesty")),
+                                id="architect-provider-select",
+                            )
                             yield Label("Architect Model:")
-                            yield Select([(m, m) for m in AVAILABLE_MODELS], value=settings.get("architect_model", AVAILABLE_MODELS[0]), id="architect-model-select")
+                            yield Select(
+                                [(m, m) for m in AVAILABLE_MODELS],
+                                value=settings.get("architect_model", AVAILABLE_MODELS[0]),
+                                id="architect-model-select",
+                            )
+                            yield Label("Worker Provider:")
+                            yield Select(
+                                provider_options,
+                                value=settings.get("swarm_provider", settings.get("default_provider", "requesty")),
+                                id="swarm-provider-select",
+                            )
                             yield Label("Worker Model:")
-                            yield Select([(m, m) for m in AVAILABLE_MODELS], value=settings.get("swarm_model", AVAILABLE_MODELS[0]), id="swarm-model-select")
+                            yield Select(
+                                [(m, m) for m in AVAILABLE_MODELS],
+                                value=settings.get("swarm_model", AVAILABLE_MODELS[0]),
+                                id="swarm-model-select",
+                            )
+                    
+                    with TabPane("API", id="api-tab"):
+                        with Vertical():
+                            yield Label("Custom API Base URL:")
+                            yield Input(
+                                value=settings.get("api_base_url", ""),
+                                placeholder="https://api.openai.com/v1/chat/completions",
+                                id="api-base-url-input",
+                                classes="settings-input"
+                            )
+                            yield Label("Custom API Key:")
+                            yield Input(
+                                value=settings.get("api_key", ""),
+                                placeholder="sk-...",
+                                password=True,
+                                id="api-key-input",
+                                classes="settings-input"
+                            )
+                            yield Rule()
+                            yield Label("Z.AI API Key (for Z.AI provider):")
+                            yield Input(
+                                value=settings.get("zai_api_key", ""),
+                                placeholder="Your Z.AI API key",
+                                password=True,
+                                id="zai-api-key-input",
+                                classes="settings-input"
+                            )
+                            yield Rule()
+                            yield Label("Tool Identifier (for API headers):")
+                            yield Select(
+                                tool_id_options,
+                                value=settings.get("tool_identifier", "swarm"),
+                                id="tool-identifier-select",
+                            )
+                            yield Label("Custom Tool ID (if 'Custom' selected):")
+                            yield Input(
+                                value=settings.get("custom_tool_id", ""),
+                                placeholder="my-custom-tool",
+                                id="custom-tool-id-input",
+                                classes="settings-input"
+                            )
                     
                     with TabPane("Advanced", id="advanced-tab"):
                         with Vertical():
                             with Horizontal(classes="settings-row"):
                                 yield Label("Max Tokens:", classes="settings-label")
-                                yield Input(value=str(settings.get("max_tokens", 100000)), id="max-tokens-input", classes="settings-input")
+                                yield Input(value=str(settings.get("max_tokens", 16000)), id="max-tokens-input", classes="settings-input")
                             with Horizontal(classes="settings-row"):
                                 yield Label("Temperature:", classes="settings-label")
                                 yield Input(value=str(settings.get("temperature", 0.8)), id="temperature-input", classes="settings-input")
@@ -176,11 +253,22 @@ class SettingsScreen(ModalScreen):
     @on(Button.Pressed, "#save-btn")
     def save_settings(self):
         settings = get_settings()
+        # General tab
         settings.set("username", self.query_one("#username-input", Input).value, auto_save=False)
         settings.set("auto_chat", self.query_one("#auto-chat-switch", Switch).value, auto_save=False)
         settings.set("tools_enabled", self.query_one("#tools-switch", Switch).value, auto_save=False)
+        # Models tab
+        settings.set("architect_provider", self.query_one("#architect-provider-select", Select).value, auto_save=False)
+        settings.set("swarm_provider", self.query_one("#swarm-provider-select", Select).value, auto_save=False)
         settings.set("architect_model", self.query_one("#architect-model-select", Select).value, auto_save=False)
         settings.set("swarm_model", self.query_one("#swarm-model-select", Select).value, auto_save=False)
+        # API tab
+        settings.set("api_base_url", self.query_one("#api-base-url-input", Input).value.strip(), auto_save=False)
+        settings.set("api_key", self.query_one("#api-key-input", Input).value.strip(), auto_save=False)
+        settings.set("zai_api_key", self.query_one("#zai-api-key-input", Input).value.strip(), auto_save=False)
+        settings.set("tool_identifier", self.query_one("#tool-identifier-select", Select).value, auto_save=False)
+        settings.set("custom_tool_id", self.query_one("#custom-tool-id-input", Input).value.strip(), auto_save=False)
+        # Advanced tab
         try: settings.set("max_tokens", int(self.query_one("#max-tokens-input", Input).value), auto_save=False)
         except: pass
         try: settings.set("temperature", float(self.query_one("#temperature-input", Input).value), auto_save=False)
@@ -341,7 +429,8 @@ class FileBrowserScreen(ModalScreen):
         if project is None:
             return
 
-        root = project.root
+        # Use the same root that was used to list files (shared_dir if it exists)
+        root = project.shared_dir if getattr(project, "shared_dir", None) and project.shared_dir.exists() else project.root
         full_path = root / rel_value
 
         viewer = self.query_one("#file-viewer", Static)
@@ -349,6 +438,9 @@ class FileBrowserScreen(ModalScreen):
         title.update(f"📄 {rel_value}")
 
         try:
+            if not full_path.exists():
+                viewer.update(f"File not found: {full_path}")
+                return
             # Try to read as UTF-8 text; fall back to binary summary
             text = full_path.read_text(encoding="utf-8")
             if len(text) > 8000:
@@ -512,23 +604,29 @@ class AgentCard(Static):
 
 
 class DevPlanPanel(Static):
-    """Panel displaying the master plan and todo list."""
+    """Panel displaying the user-facing dashboard and project status."""
     
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.plan_content = "Loading..."
     
     def refresh_plan(self):
-        """Load the master plan from file."""
+        """Load the user-facing dashboard from file."""
         try:
+            # Prefer user-facing dashboard.md (cleaner, auto-generated)
+            dashboard_path = get_scratch_dir() / "shared" / "dashboard.md"
             devplan_path = get_scratch_dir() / "shared" / "devplan.md"
             plan_path = get_scratch_dir() / "shared" / "master_plan.md"
-            todo_path = get_scratch_dir() / "shared" / "todo.md"
+            blockers_path = get_scratch_dir() / "shared" / "blockers.md"
             
             content_parts = []
             
-            # Prefer live devplan dashboard if present
-            if devplan_path.exists():
+            # Show user-facing dashboard first (if exists)
+            if dashboard_path.exists():
+                content = dashboard_path.read_text(encoding='utf-8')
+                content_parts.append(content)
+            elif devplan_path.exists():
+                # Fall back to devplan if no dashboard yet
                 content = devplan_path.read_text(encoding='utf-8')
                 content_parts.append(content)
             elif plan_path.exists():
@@ -536,23 +634,25 @@ class DevPlanPanel(Static):
                 content_parts.append(content)
             else:
                 content_parts.append(
-                    "No devplan.md or master_plan.md yet.\n\n"
-                    "Ask the Architect:\n"
-                    "  'Create a plan and devplan dashboard for [your project]'\n\n"
-                    "The plan and dashboard will appear here."
+                    "📋 No project dashboard yet.\n\n"
+                    "Start by telling the Architect what you want to build:\n"
+                    "  'Create a [description of your project]'\n\n"
+                    "The dashboard will appear here once work begins."
                 )
             
-            if todo_path.exists():
-                todo_content = todo_path.read_text(encoding='utf-8')
-                content_parts.append("\n\n════════════════════════════════════════════════════════════\n")
-                content_parts.append("TODO LIST (scratch/shared/todo.md)\n")
-                content_parts.append("════════════════════════════════════════════════════════════\n")
-                content_parts.append(todo_content)
+            # Show blockers if any exist
+            if blockers_path.exists():
+                blockers_content = blockers_path.read_text(encoding='utf-8')
+                if blockers_content.strip():
+                    content_parts.append("\n\n════════════════════════════════════════════════════════════\n")
+                    content_parts.append("⚠️ BLOCKERS (scratch/shared/blockers.md)\n")
+                    content_parts.append("════════════════════════════════════════════════════════════\n")
+                    content_parts.append(blockers_content)
             
             self.plan_content = "\n".join(content_parts)
             
         except Exception as e:
-            self.plan_content = f"Error loading plan: {e}"
+            self.plan_content = f"Error loading dashboard: {e}"
         
         self.update(self.plan_content)
 
@@ -670,6 +770,15 @@ class ApiLogEntry(Static):
             lines.append(f"  Max Tokens: {max_tokens}")
             lines.append(f"  Messages: {msg_count}")
 
+            temperature = self.request_data.get("temperature")
+            if temperature is not None:
+                lines.append(f"  Temperature: {temperature}")
+
+            task = (self.request_data.get("task") or "").strip()
+            if task:
+                short_task = task[:120]
+                lines.append(f"  Task: {short_task}{'...' if len(task) > 120 else ''}")
+
             tool_names = self.request_data.get("tool_names", [])
             if tool_names:
                 lines.append(f"  Tools: {', '.join(tool_names[:5])}")
@@ -679,9 +788,11 @@ class ApiLogEntry(Static):
             if self.has_response:
                 usage = self.response_data.get("usage", {})
                 elapsed = self.response_data.get("elapsed", 0)
-                total = usage.get("prompt_tokens", 0) + usage.get("completion_tokens", 0)
+                prompt_tokens = usage.get("prompt_tokens", 0)
+                completion_tokens = usage.get("completion_tokens", 0)
+                total = prompt_tokens + completion_tokens
                 lines.append(f"  Time: {elapsed:.2f}s")
-                lines.append(f"  Total Tokens: {total:,}")
+                lines.append(f"  Tokens: P {prompt_tokens:,} | C {completion_tokens:,} | T {total:,}")
                 preview = self.response_data.get("preview") or self.response_data.get("full_response", "")
                 if preview:
                     lines.append("")
@@ -691,8 +802,8 @@ class ApiLogEntry(Static):
             else:
                 lines.append("  Status: waiting for response…")
 
-        # Level 2+: full details as before
-        elif self.detail_level >= 2 and self.has_response:
+        # Level 2+: full details (request always, response when available)
+        elif self.detail_level >= 2:
             lines.append("")
             lines.append("═══ REQUEST ═══")
             
@@ -722,44 +833,45 @@ class ApiLogEntry(Static):
                     lines.append(f"  │ {cl}")
                 lines.append("  └─────")
             
-            lines.append("")
-            lines.append("═══ RESPONSE ═══")
-            
-            usage = self.response_data.get("usage", {})
-            elapsed = self.response_data.get("elapsed", 0)
-            lines.append(f"  Time: {elapsed:.2f}s")
-            lines.append(f"  Prompt Tokens: {usage.get('prompt_tokens', 0):,}")
-            lines.append(f"  Completion Tokens: {usage.get('completion_tokens', 0):,}")
-            lines.append(f"  Total Tokens: {usage.get('prompt_tokens', 0) + usage.get('completion_tokens', 0):,}")
-            
-            full_response = self.response_data.get("full_response", "")
-            if full_response:
+            if self.has_response:
                 lines.append("")
-                lines.append("  Content:")
-                lines.append("  ┌─────")
-                response_lines = full_response.split('\n')
-                for rl in response_lines:
-                    lines.append(f"  │ {rl}")
-                lines.append("  └─────")
-            
-            tool_calls = self.response_data.get("tool_calls", [])
-            if tool_calls:
-                lines.append("")
-                lines.append(f"  Tool Calls ({len(tool_calls)}):")
-                for tc in tool_calls:
-                    func = tc.get("function", {})
-                    name = func.get("name", "?")
-                    args = func.get("arguments", "")
-                    lines.append(f"  ┌─ {name}")
-                    try:
-                        import json
-                        args_dict = json.loads(args) if args else {}
-                        for k, v in args_dict.items():
-                            v_str = str(v)
-                            lines.append(f"  │   {k}: {v_str}")
-                    except:
-                        lines.append(f"  │   {args}")
+                lines.append("═══ RESPONSE ═══")
+                
+                usage = self.response_data.get("usage", {})
+                elapsed = self.response_data.get("elapsed", 0)
+                lines.append(f"  Time: {elapsed:.2f}s")
+                lines.append(f"  Prompt Tokens: {usage.get('prompt_tokens', 0):,}")
+                lines.append(f"  Completion Tokens: {usage.get('completion_tokens', 0):,}")
+                lines.append(f"  Total Tokens: {usage.get('prompt_tokens', 0) + usage.get('completion_tokens', 0):,}")
+                
+                full_response = self.response_data.get("full_response", "")
+                if full_response:
+                    lines.append("")
+                    lines.append("  Content:")
+                    lines.append("  ┌─────")
+                    response_lines = full_response.split('\n')
+                    for rl in response_lines:
+                        lines.append(f"  │ {rl}")
                     lines.append("  └─────")
+                
+                tool_calls = self.response_data.get("tool_calls", [])
+                if tool_calls:
+                    lines.append("")
+                    lines.append(f"  Tool Calls ({len(tool_calls)}):")
+                    for tc in tool_calls:
+                        func = tc.get("function", {})
+                        name = func.get("name", "?")
+                        args = func.get("arguments", "")
+                        lines.append(f"  ┌─ {name}")
+                        try:
+                            import json
+                            args_dict = json.loads(args) if args else {}
+                            for k, v in args_dict.items():
+                                v_str = str(v)
+                                lines.append(f"  │   {k}: {v_str}")
+                        except:
+                            lines.append(f"  │   {args}")
+                        lines.append("  └─────")
             
             lines.append("═════════════════")
         
@@ -935,6 +1047,18 @@ class SwarmDashboard(App):
         border-bottom: solid $primary-darken-3;
         padding-bottom: 1;
         margin-bottom: 1;
+        min-height: 2;
+    }
+
+    #inflight-label {
+        color: $warning;
+        text-style: bold;
+        margin-top: 1;
+    }
+
+    #history-label {
+        color: $text-muted;
+        margin-top: 1;
     }
 
     .section-title {
@@ -1070,8 +1194,10 @@ class SwarmDashboard(App):
                 yield Label("📋 DEVPLAN", classes="section-title")
                 yield DevPlanPanel(id="devplan")
             with ScrollableContainer(id="api-log-scroll"):
-                yield Label("📡 API LOG (in-flight ↑, history ↓ — click to cycle details)", classes="section-title")
+                yield Label("📡 API LOG", classes="section-title")
+                yield Label("⏳ In-Flight Requests:", id="inflight-label")
                 yield Vertical(id="api-log-inflight")
+                yield Label("📜 Completed (click to expand):", id="history-label")
                 yield Vertical(id="api-log-history")
             yield Button("📁 FILES", variant="primary", id="files-btn")
             yield Button("⏹ STOP", variant="error", id="stop-btn")
@@ -1463,14 +1589,17 @@ class SwarmDashboard(App):
             self.chat_log.write(Text("  /help     - Show this help", style="dim"))
             self.chat_log.write(Text("  /settings - Open settings (Ctrl+S)", style="dim"))
             self.chat_log.write(Text("  /tasks    - View tasks (Ctrl+T)", style="dim"))
+            self.chat_log.write(Text("  /files    - Browse project files (Ctrl+F)", style="dim"))
             self.chat_log.write(Text("  /stop     - Stop current (Ctrl+X)", style="dim"))
-            self.chat_log.write(Text("  /plan     - Refresh devplan (Ctrl+P)", style="dim"))
+            self.chat_log.write(Text("  /plan     - Refresh dashboard (Ctrl+P)", style="dim"))
+            self.chat_log.write(Text("  /devplan  - Show raw devplan.md", style="dim"))
             self.chat_log.write(Text("  /spawn <role> - Spawn agent", style="dim"))
+            self.chat_log.write(Text("  /model    - View/change agent models", style="dim"))
             self.chat_log.write(Text("  /status   - Show status", style="dim"))
             self.chat_log.write(Text("  /clear    - Clear chat", style="dim"))
             self.chat_log.write(Text("  /fix <reason> - Stop & request fix", style="dim"))
             self.chat_log.write(Text("  /snapshot - Snapshot current project folder", style="dim"))
-            self.chat_log.write(Text("  /api      - View or change API base URL and key", style="dim"))
+            self.chat_log.write(Text("  /api      - View or change API provider", style="dim"))
             self.chat_log.write(Text("─" * 50, style="dim"))
             self.chat_log.write(Text(f"Roles: {', '.join(AGENT_CLASSES.keys())}", style="dim"))
         elif cmd == "/settings":
@@ -1481,6 +1610,25 @@ class SwarmDashboard(App):
             await self.action_stop_current()
         elif cmd == "/plan":
             self.action_refresh_plan()
+        elif cmd == "/devplan":
+            # Show the raw devplan.md content in chat
+            try:
+                devplan_path = get_scratch_dir() / "shared" / "devplan.md"
+                if devplan_path.exists():
+                    content = devplan_path.read_text(encoding='utf-8')
+                    self.chat_log.write(Text("─" * 50, style="dim"))
+                    self.chat_log.write(Text("📋 DEVPLAN.MD (Architect's Internal Tracker):", style="yellow bold"))
+                    self.chat_log.write(Text("─" * 50, style="dim"))
+                    # Show first 2000 chars to avoid flooding
+                    if len(content) > 2000:
+                        self.chat_log.write(Text(content[:2000] + "\n... (truncated)", style="dim"))
+                    else:
+                        self.chat_log.write(Text(content, style="dim"))
+                    self.chat_log.write(Text("─" * 50, style="dim"))
+                else:
+                    self.chat_log.write(Text("No devplan.md found yet.", style="yellow"))
+            except Exception as e:
+                self.chat_log.write(Text(f"Error reading devplan: {e}", style="red"))
         elif cmd == "/files":
             self.action_open_files()
         elif cmd == "/status":

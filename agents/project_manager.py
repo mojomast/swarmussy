@@ -128,8 +128,10 @@ class ProjectManager(BaseAgent):
     def should_respond(self) -> bool:
         """Decide when Checky should provide an update.
 
-        Instead of speaking at random, Checky responds whenever the swarm's
-        task state changes (new tasks, assignments, completions, failures).
+        Checky responds when:
+        1. Task state changes (new tasks, assignments, completions, failures)
+        2. Periodically during active work (every 60s) to provide status updates
+        3. When there are completed tasks that haven't been reported yet
         """
         try:
             from core.task_manager import get_task_manager
@@ -138,30 +140,45 @@ class ProjectManager(BaseAgent):
         except Exception:
             tasks = []
 
+        # No tasks at all - nothing to report
         if not tasks:
             return False
 
+        now = time.time()
+        
         # Snapshot of the task state: (id, status, assigned_to)
         snapshot = [(t.id, t.status.value, getattr(t, "assigned_to", None)) for t in tasks]
         last_snapshot = getattr(self, "_last_task_snapshot", None)
         last_time = getattr(self, "_last_task_snapshot_time", 0.0)
-        now = time.time()
+        last_periodic = getattr(self, "_last_periodic_update", 0.0)
 
-        # Cooldown in seconds between Checky updates even if tasks keep changing
-        COOLDOWN = 10.0
+        # Cooldown in seconds between Checky updates on task changes
+        CHANGE_COOLDOWN = 15.0
+        # Periodic update interval during active work
+        PERIODIC_INTERVAL = 60.0
 
         # First time we see tasks: report once to establish a baseline
         if last_snapshot is None:
             self._last_task_snapshot = snapshot
             self._last_task_snapshot_time = now
+            self._last_periodic_update = now
             return True
 
-        # If anything changed since the last report, speak up, but at most once
-        # per cooldown window to avoid spamming on rapid task churn.
-        if snapshot != last_snapshot:
+        # Check if task state changed
+        state_changed = snapshot != last_snapshot
+        
+        if state_changed:
             self._last_task_snapshot = snapshot
-            if now - last_time >= COOLDOWN:
+            # Respond if cooldown has passed
+            if now - last_time >= CHANGE_COOLDOWN:
                 self._last_task_snapshot_time = now
+                self._last_periodic_update = now
                 return True
+
+        # Check for periodic updates during active work
+        in_progress_tasks = [t for t in tasks if t.status.value == "in_progress"]
+        if in_progress_tasks and (now - last_periodic >= PERIODIC_INTERVAL):
+            self._last_periodic_update = now
+            return True
 
         return False

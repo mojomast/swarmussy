@@ -9,6 +9,7 @@ import asyncio
 import aiohttp
 import random
 import json
+import os
 from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import List, Optional, Dict, Any, Callable
@@ -21,6 +22,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from config.settings import (
     REQUESTY_API_KEY,
     REQUESTY_API_BASE_URL,
+    ZAI_API_KEY,
+    ZAI_API_BASE_URL,
     DEFAULT_MODEL,
     SHORT_TERM_MEMORY_SIZE,
     DEFAULT_TEMPERATURE,
@@ -40,7 +43,7 @@ def set_api_log_callback(callback):
 def get_api_log_callback():
     """Get the current API log callback."""
     return _api_log_callback
-from core.models import Message, MessageRole, AgentConfig, MemoryEntry, AgentStatus, TaskStatus
+from core.models import Message, MessageRole, MessageType, AgentConfig, MemoryEntry, AgentStatus, TaskStatus
 from core.memory_store import get_memory_store
 from core.summarizer import ConversationMemoryManager
 from core.agent_tools import AgentToolExecutor, TOOL_DEFINITIONS, get_tools_system_prompt, get_tools_for_agent
@@ -49,6 +52,9 @@ from core.token_tracker import get_token_tracker
 from core.settings_manager import get_settings
 
 logger = logging.getLogger(__name__)
+
+_ZAI_RESPONSE_CACHE: Dict[str, Any] = {}
+_ZAI_CACHE_MAX_ENTRIES = 256
 
 
 class BaseAgent(ABC):
@@ -128,43 +134,40 @@ class BaseAgent(ABC):
         Determine if this agent should respond.
         
         Strict Orchestration Logic:
-        - Architect: Only responds to NEW human messages (not already responded to).
-        - Workers: Only if assigned a task (WORKING).
+        - Architect: Responds to NEW human messages OR auto-orchestrator messages
+        - Workers: Only if assigned a task (WORKING)
+        - Project Manager: Has its own should_respond() override
         """
-        # Architect: Only respond to new human messages
+        # Architect: respond to new human messages or auto-orchestrator messages
         if "Architect" in self.__class__.__name__:
-            # Check if there's a human message we haven't responded to yet
-            last_human_msg_id = None
+            # Find the last message we should respond to (human or auto-orchestrator)
+            last_trigger_msg_id = None
             for msg in reversed(self._short_term_memory):
                 if msg.role == MessageRole.HUMAN:
-                    last_human_msg_id = msg.id
+                    last_trigger_msg_id = msg.id
+                    break
+                # Also respond to auto-orchestrator messages (phase completion triggers)
+                if msg.role == MessageRole.SYSTEM and "Auto Orchestrator" in getattr(msg, 'sender_name', ''):
+                    last_trigger_msg_id = msg.id
                     break
             
-            # If no human messages, don't respond (wait for input)
-            if not last_human_msg_id:
-                return len(self._short_term_memory) == 0  # Only respond on first join
+            # If no trigger messages, only respond on first join
+            if not last_trigger_msg_id:
+                return len(self._short_term_memory) == 0
             
-            # Check if we already responded after this human message
+            # Check if we already responded after this trigger message
             if hasattr(self, '_last_responded_to_human_id'):
-                if self._last_responded_to_human_id == last_human_msg_id:
+                if self._last_responded_to_human_id == last_trigger_msg_id:
                     return False  # Already responded, wait for new input
             
-            # New human message, we should respond
+            # New trigger message, we should respond
             return True
-            
-        # Project Manager: can speak periodically when there is active work,
-        # even without a direct task assignment, to report status and risks.
+        
+        # Project Manager: delegate to its own should_respond() if it has one
+        # The base class check here is a fallback; ProjectManager overrides this
         if "ProjectManager" in self.__class__.__name__ or "McManager" in self.name:
-            try:
-                from core.task_manager import get_task_manager
-                tm = get_task_manager()
-                tasks = tm.get_all_tasks()
-            except Exception:
-                tasks = []
-
-            if tasks:
-                # Use speak_probability as a soft throttle to avoid spam
-                return random.random() < self.speak_probability
+            # Let the subclass handle it - this code path shouldn't be hit
+            # if ProjectManager properly overrides should_respond()
             return False
 
         # Workers only speak when working
@@ -232,7 +235,7 @@ You are part of a high-performance software development swarm. Your goal is to s
 ## ORCHESTRATION PROTOCOL:
 - **Wait for Tasks**: Do not start work until assigned.
 - **Acknowledge**: When assigned, say "Acknowledged. Starting task..."
-- **Report**: When done, say "Task Complete: [Summary of results]".
+- **Signal Completion**: When done, call `complete_my_task(result="Brief summary of what you accomplished")`. This is REQUIRED to mark your task as done.
 - **Silence**: Do not chat casually. Only speak to coordinate work.
 
 Keep chat responses concise and focused on the task. Use the tools for the heavy lifting."""
@@ -322,25 +325,74 @@ Keep chat responses concise and focused on the task. Use the tools for the heavy
             Full API response data, or empty dict on error
         """
         settings = get_settings()
-        configured_base = settings.get("api_base_url", "") or ""
-        configured_key = settings.get("api_key", "") or ""
 
-        api_base_url = configured_base.strip() or REQUESTY_API_BASE_URL
-        api_key = configured_key.strip() or REQUESTY_API_KEY
+        # Global custom override (used when provider == "custom" or as legacy
+        # fallback when no Requesty key is present).
+        custom_base = (settings.get("api_base_url", "") or "").strip()
+        custom_key = (settings.get("api_key", "") or "").strip()
+
+        # Determine which provider this agent should use.
+        is_architect = "Architect" in self.__class__.__name__ or "Architect" in getattr(self, "name", "")
+        default_provider = settings.get("default_provider", "requesty") or "requesty"
+        provider_key = "architect_provider" if is_architect else "swarm_provider"
+        provider = settings.get(provider_key, default_provider) or "requesty"
+
+        api_base_url = ""
+        api_key = ""
+
+        if provider == "zai":
+            zai_base = (settings.get("zai_api_base_url", "") or "").strip()
+            zai_key = (settings.get("zai_api_key", "") or "").strip() or ZAI_API_KEY
+            api_base_url = zai_base or ZAI_API_BASE_URL
+            api_key = zai_key
+        elif provider == "openai":
+            # Direct OpenAI API
+            api_base_url = custom_base or "https://api.openai.com/v1/chat/completions"
+            api_key = custom_key or os.getenv("OPENAI_API_KEY", "")
+        elif provider == "custom":
+            api_base_url = custom_base or REQUESTY_API_BASE_URL
+            api_key = custom_key or REQUESTY_API_KEY
+        else:  # requesty (default)
+            api_base_url = REQUESTY_API_BASE_URL
+            api_key = REQUESTY_API_KEY
+            # Backwards compatibility: if no Requesty key is set but a custom
+            # provider is configured, fall back to that.
+            if not api_key and custom_base and custom_key:
+                api_base_url = custom_base
+                api_key = custom_key
 
         if not api_key:
-            logger.error("API key not configured. Set REQUESTY_API_KEY in .env or configure a custom provider via /api.")
+            logger.error(
+                f"API key not configured for provider '{provider}'. "
+                "Set REQUESTY_API_KEY, configure a custom provider via /api, or provide ZAI_API_KEY / z.ai settings."
+            )
             return {}
 
         if not api_base_url:
-            logger.error("API base URL not configured.")
+            logger.error(f"API base URL not configured for provider '{provider}'.")
             return {}
 
         session = await self._get_session()
 
+        # Build tool identifier for API headers (for spoofing as different tools)
+        tool_id = settings.get("tool_identifier", "swarm")
+        tool_id_map = {
+            "swarm": "swarm-agent/1.0",
+            "claude-code": "claude-code/1.0",
+            "cursor": "cursor/0.45",
+            "windsurf": "windsurf/1.0",
+            "aider": "aider/0.50",
+            "continue": "continue/1.0",
+        }
+        if tool_id == "custom":
+            user_agent = settings.get("custom_tool_id", "swarm-agent/1.0") or "swarm-agent/1.0"
+        else:
+            user_agent = tool_id_map.get(tool_id, "swarm-agent/1.0")
+
         headers = {
             "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "User-Agent": user_agent,
         }
         
         payload = {
@@ -349,6 +401,30 @@ Keep chat responses concise and focused on the task. Use the tools for the heavy
             "temperature": self.temperature,
             "max_tokens": TOOL_MAX_TOKENS if use_tools else self.max_tokens
         }
+
+        cache_key = None
+        cached_data: Dict[str, Any] = None
+        is_cache_hit = False
+        if provider == "zai":
+            try:
+                cache_key = json.dumps(
+                    {
+                        "model": self.model,
+                        "messages": messages,
+                        "temperature": self.temperature,
+                        "max_tokens": payload.get("max_tokens"),
+                        "tools": payload.get("tools"),
+                        "tool_choice": payload.get("tool_choice"),
+                    },
+                    sort_keys=True,
+                    ensure_ascii=False,
+                )
+                cached_data = _ZAI_RESPONSE_CACHE.get(cache_key)
+                if cached_data is not None:
+                    is_cache_hit = True
+            except TypeError:
+                cache_key = None
+                cached_data = None
         
         # Add tools if enabled - use role-appropriate tools
         if use_tools and self.tools_enabled:
@@ -381,117 +457,128 @@ Keep chat responses concise and focused on the task. Use the tools for the heavy
                     "msg_count": len(messages),
                     "preview": last_user_msg,
                     "messages": messages,  # Full messages for expandable view
-                    "tool_names": [t.get("function", {}).get("name", "?") for t in payload.get("tools", [])] if payload.get("tools") else []
+                    "tool_names": [t.get("function", {}).get("name", "?") for t in payload.get("tools", [])] if payload.get("tools") else [],
+                    "temperature": self.temperature,
+                    "task": getattr(self, "current_task_description", ""),
                 })
             except Exception:
                 pass  # Don't let logging errors break API calls
         
         try:
-            async with session.post(
-                api_base_url,
-                headers=headers,
-                json=payload,
-                timeout=aiohttp.ClientTimeout(total=600)  # 10 minutes for large generations
-            ) as response:
+            if is_cache_hit:
                 elapsed = time.time() - start_time
-                response_text = await response.text()
-                
-                logger.info(f"[{self.name}] Response status: {response.status}")
-                logger.debug(f"[{self.name}] Response body: {response_text[:20000]}")
-                
-                if response.status != 200:
-                    logger.error(f"[{self.name}] API error {response.status}: {response_text}")
-                    # Log error to TUI
-                    if callback:
-                        try:
-                            callback("response", self.name, {"request_id": request_id, "status": response.status, "elapsed": elapsed})
-                        except Exception:
-                            pass
-                    return {}
-                
-                try:
-                    data = json.loads(response_text)
-                except json.JSONDecodeError as e:
-                    logger.error(f"[{self.name}] Failed to parse JSON: {e}")
-                    if callback:
-                        try:
-                            callback("error", self.name, {"request_id": request_id, "error": "JSON parse error", "elapsed": elapsed})
-                        except Exception:
-                            pass
-                    return {}
-                
-                # Extract response preview
-                response_preview = ""
-                if "choices" in data and data["choices"]:
-                    choice = data["choices"][0]
-                    if "message" in choice:
-                        content = choice["message"].get("content", "")
-                        if content:
-                            response_preview = content[:60]
-                        elif choice["message"].get("tool_calls"):
-                            tool_call = choice["message"]["tool_calls"][0]
-                            response_preview = f"[tool: {tool_call.get('function', {}).get('name', '?')}]"
-                
-                if "usage" in data:
-                    logger.info(f"[{self.name}] Tokens: {data['usage'].get('total_tokens', '?')}")
-                    # Track token usage with agent name
-                    tracker = get_token_tracker()
-                    prompt_tokens = data['usage'].get('prompt_tokens', 0)
-                    completion_tokens = data['usage'].get('completion_tokens', 0)
-                    current_task = getattr(self, 'current_task_description', '')
-                    tracker.add_usage(prompt_tokens, completion_tokens, agent_name=self.name, task=current_task)
-                    # If a single request's prompt context is very large, nudge
-                    # the orchestrator to consider a handoff to a fresh worker.
+                data = cached_data
+            else:
+                async with session.post(
+                    api_base_url,
+                    headers=headers,
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=600)  # 10 minutes for large generations
+                ) as response:
+                    elapsed = time.time() - start_time
+                    response_text = await response.text()
+                    
+                    logger.info(f"[{self.name}] Response status: {response.status}")
+                    logger.debug(f"[{self.name}] Response body: {response_text[:20000]}")
+                    
+                    if response.status != 200:
+                        logger.error(f"[{self.name}] API error {response.status}: {response_text}")
+                        # Log error to TUI
+                        if callback:
+                            try:
+                                callback("response", self.name, {"request_id": request_id, "status": response.status, "elapsed": elapsed})
+                            except Exception:
+                                pass
+                        return {}
+                    
                     try:
-                        CONTEXT_HANDOFF_THRESHOLD = 80_000
-                        if (
-                            prompt_tokens >= CONTEXT_HANDOFF_THRESHOLD
-                            and self.current_task_id
-                            and getattr(self, "_context_handoff_task_id", None) != self.current_task_id
-                        ):
-                            from core.chatroom import get_chatroom
+                        data = json.loads(response_text)
+                    except json.JSONDecodeError as e:
+                        logger.error(f"[{self.name}] Failed to parse JSON: {e}")
+                        if callback:
+                            try:
+                                callback("error", self.name, {"request_id": request_id, "error": "JSON parse error", "elapsed": elapsed})
+                            except Exception:
+                                pass
+                        return {}
 
-                            self._context_handoff_task_id = self.current_task_id
-                            chatroom = await get_chatroom()
-                            await chatroom.add_human_message(
-                                content=(
-                                    f"Context for {self.name}'s current task has grown to about "
-                                    f"{prompt_tokens} prompt tokens. "
-                                    "Please hand off this work to a fresh worker with a concise summary "
-                                    "so future calls stay under ~80k tokens of context."
-                                ),
-                                username="Auto Orchestrator",
-                                user_id="auto_orchestrator",
-                            )
-                    except Exception:
-                        pass
-                
-                # Log successful response to TUI
-                if callback:
-                    try:
-                        # Extract full response content
-                        full_response = ""
-                        tool_calls_data = []
-                        if "choices" in data and data["choices"]:
-                            choice = data["choices"][0]
-                            if "message" in choice:
-                                full_response = choice["message"].get("content", "") or ""
-                                if choice["message"].get("tool_calls"):
-                                    tool_calls_data = choice["message"]["tool_calls"]
-                        
-                        callback("response", self.name, {
-                            "request_id": request_id,
-                            "status": 200,
-                            "usage": data.get("usage", {}),
-                            "elapsed": elapsed,
-                            "preview": response_preview,
-                            "full_response": full_response,
-                            "tool_calls": tool_calls_data
-                        })
-                    except Exception:
-                        pass
-                
-                return data
+                    if provider == "zai" and cache_key:
+                        if len(_ZAI_RESPONSE_CACHE) >= _ZAI_CACHE_MAX_ENTRIES:
+                            _ZAI_RESPONSE_CACHE.clear()
+                        _ZAI_RESPONSE_CACHE[cache_key] = data
+
+            # Extract response preview
+            response_preview = ""
+            if "choices" in data and data["choices"]:
+                choice = data["choices"][0]
+                if "message" in choice:
+                    content = choice["message"].get("content", "")
+                    if content:
+                        response_preview = content[:60]
+                    elif choice["message"].get("tool_calls"):
+                        tool_call = choice["message"]["tool_calls"][0]
+                        response_preview = f"[tool: {tool_call.get('function', {}).get('name', '?')}]"
+            
+            if "usage" in data and not is_cache_hit:
+                logger.info(f"[{self.name}] Tokens: {data['usage'].get('total_tokens', '?')}")
+                # Track token usage with agent name
+                tracker = get_token_tracker()
+                prompt_tokens = data['usage'].get('prompt_tokens', 0)
+                completion_tokens = data['usage'].get('completion_tokens', 0)
+                current_task = getattr(self, 'current_task_description', '')
+                tracker.add_usage(prompt_tokens, completion_tokens, agent_name=self.name, task=current_task)
+                # If a single request's prompt context is very large, nudge
+                # the orchestrator to consider a handoff to a fresh worker.
+                try:
+                    CONTEXT_HANDOFF_THRESHOLD = 80_000
+                    if (
+                        prompt_tokens >= CONTEXT_HANDOFF_THRESHOLD
+                        and self.current_task_id
+                        and getattr(self, "_context_handoff_task_id", None) != self.current_task_id
+                    ):
+                        from core.chatroom import get_chatroom
+
+                        self._context_handoff_task_id = self.current_task_id
+                        chatroom = await get_chatroom()
+                        await chatroom.add_human_message(
+                            content=(
+                                f"Context for {self.name}'s current task has grown to about "
+                                f"{prompt_tokens} prompt tokens. "
+                                "Please hand off this work to a fresh worker with a concise summary "
+                                "so future calls stay under ~80k tokens of context."
+                            ),
+                            username="Auto Orchestrator",
+                            user_id="auto_orchestrator",
+                        )
+                except Exception:
+                    pass
+            
+            # Log successful response to TUI
+            if callback:
+                try:
+                    # Extract full response content
+                    full_response = ""
+                    tool_calls_data = []
+                    if "choices" in data and data["choices"]:
+                        choice = data["choices"][0]
+                        if "message" in choice:
+                            full_response = choice["message"].get("content", "") or ""
+                            if choice["message"].get("tool_calls"):
+                                tool_calls_data = choice["message"]["tool_calls"]
+                    
+                    callback("response", self.name, {
+                        "request_id": request_id,
+                        "status": 200,
+                        "usage": data.get("usage", {}),
+                        "elapsed": elapsed,
+                        "preview": response_preview,
+                        "full_response": full_response,
+                        "tool_calls": tool_calls_data
+                    })
+                except Exception:
+                    pass
+            
+            return data
                 
         except asyncio.TimeoutError:
             elapsed = time.time() - start_time
@@ -526,7 +613,8 @@ Keep chat responses concise and focused on the task. Use the tools for the heavy
         messages: List[Dict[str, str]], 
         tool_calls: List[Dict],
         status_callback: Optional[Callable] = None,
-        depth: int = 0
+        depth: int = 0,
+        _failure_counts: Optional[Dict[str, int]] = None,
     ) -> str:
         """
         Execute tool calls and get final response.
@@ -545,6 +633,9 @@ Keep chat responses concise and focused on the task. Use the tools for the heavy
         from core.settings_manager import get_settings
         settings = get_settings()
         MAX_TOOL_DEPTH = settings.get("max_tool_depth", 50)
+
+        if _failure_counts is None:
+            _failure_counts = {}
         
         if depth >= MAX_TOOL_DEPTH:
             logger.warning(f"[{self.name}] Max tool call depth ({MAX_TOOL_DEPTH}) reached, stopping")
@@ -560,6 +651,7 @@ Keep chat responses concise and focused on the task. Use the tools for the heavy
         })
         
         # Execute each tool and collect results
+        fatal_error_key = None
         for tool_call in tool_calls:
             tool_name = tool_call.get("function", {}).get("name", "")
             tool_args_str = tool_call.get("function", {}).get("arguments", "{}")
@@ -581,6 +673,15 @@ Keep chat responses concise and focused on the task. Use the tools for the heavy
             result = await self._tool_executor.execute_tool(tool_name, tool_args)
             
             logger.info(f"[{self.name}] Tool result: {str(result)[:500]}")
+
+            if isinstance(result, dict) and not result.get("success"):
+                error_msg = (result.get("error") or "").strip()
+                if error_msg:
+                    key = f"{tool_name}:{error_msg}"
+                    count = _failure_counts.get(key, 0) + 1
+                    _failure_counts[key] = count
+                    if count >= 3 and fatal_error_key is None:
+                        fatal_error_key = key
             
             # Broadcast result summary for write operations
             if status_callback and tool_name in ["write_file", "append_file", "edit_file"]:
@@ -602,7 +703,20 @@ Keep chat responses concise and focused on the task. Use the tools for the heavy
                 "tool_call_id": tool_id,
                 "content": json.dumps(result)
             })
-        
+
+        if fatal_error_key:
+            try:
+                tool_name, error_msg = fatal_error_key.split(":", 1)
+            except ValueError:
+                tool_name = fatal_error_key
+                error_msg = ""
+            summary = (
+                f"[Tool '{tool_name}' failed repeatedly with the same error. "
+                f"Error: {error_msg}. "
+                "I will stop calling tools for this task. Please adjust the inputs or fix the configuration and try again.]"
+            )
+            return summary
+
         # Get final response after tool execution
         final_data = await self._call_api(messages, use_tools=True)
         
@@ -614,7 +728,7 @@ Keep chat responses concise and focused on the task. Use the tools for the heavy
         
         # Check for more tool calls (recursive with depth limit)
         if message.get("tool_calls"):
-            return await self._handle_tool_calls(messages, message["tool_calls"], status_callback, depth + 1)
+            return await self._handle_tool_calls(messages, message["tool_calls"], status_callback, depth + 1, _failure_counts)
         
         return message.get("content", "")
     
@@ -748,31 +862,64 @@ Keep chat responses concise and focused on the task. Use the tools for the heavy
         memory_store = await get_memory_store()
         await self._memory_manager.process_new_message(msg, memory_store)
         
-        # Check for task completion triggers (simple heuristic)
-        if self.current_task_id and "Task Complete" in response_text:
+        # Check for task completion triggers (multiple patterns for robustness)
+        task_complete_triggers = [
+            "Task Complete",
+            "task complete",
+            "Task completed",
+            "task completed",
+            "TASK COMPLETE",
+            "Acknowledged. Task done",
+            "I have completed",
+            "Successfully completed",
+            "Work complete",
+            "Implementation complete",
+            "Done with task",
+        ]
+        
+        is_task_complete = self.current_task_id and any(
+            trigger in response_text for trigger in task_complete_triggers
+        )
+        
+        if is_task_complete:
             task_manager = get_task_manager()
-            task_manager.complete_task(self.current_task_id, result=response_text)
+            task_manager.complete_task(self.current_task_id, result=response_text[:500])
+            completed_task_id = self.current_task_id
             self.status = AgentStatus.IDLE
             self.current_task_id = None
             self.current_task_description = ""
-            logger.info(f"Agent {self.name} completed task and is now IDLE")
+            logger.info(f"Agent {self.name} completed task {completed_task_id} and is now IDLE")
 
-            # If this was the last open task, nudge Checky/Bossy to plan next work
+            # Check if this was the last open task and trigger auto-resume
             try:
                 all_tasks = task_manager.get_all_tasks()
-                has_open = any(t.status in (TaskStatus.PENDING, TaskStatus.IN_PROGRESS) for t in all_tasks)
-                if not has_open and all_tasks:
+                open_tasks = [t for t in all_tasks if t.status in (TaskStatus.PENDING, TaskStatus.IN_PROGRESS)]
+                completed_tasks = [t for t in all_tasks if t.status == TaskStatus.COMPLETED]
+                
+                if not open_tasks and completed_tasks:
                     from core.chatroom import get_chatroom
                     chatroom = await get_chatroom()
-                    await chatroom.add_human_message(
+                    
+                    # Create a proper human-role message that the Architect will respond to
+                    auto_msg = Message(
                         content=(
-                            "All current swarm tasks are finished. "
-                            "Checky McManager: refresh status reports and make sure the devplan/dashboard reflect the latest work. "
-                            "Bossy McArchitect: review the updated devplan and assign the next concrete batch of tasks so development keeps moving without human prompts."
+                            f"Phase milestone reached: {len(completed_tasks)} task(s) completed, 0 remaining. "
+                            "Bossy McArchitect: Review the devplan, check what work remains in the master plan, "
+                            "and assign the next batch of tasks to keep development moving. "
+                            "If all planned work is done, summarize the deliverables for the human."
                         ),
-                        username="Auto Orchestrator",
-                        user_id="auto_orchestrator",
+                        sender_name="Auto Orchestrator",
+                        sender_id="auto_orchestrator",
+                        role=MessageRole.HUMAN,  # Use HUMAN role so Architect responds
+                        message_type=MessageType.CHAT
                     )
+                    await chatroom._broadcast_message(auto_msg)
+                    
+                    # Notify all agents about this message
+                    for agent in list(chatroom._agents.values()):
+                        await agent.process_incoming_message(auto_msg)
+                    
+                    logger.info("Auto-orchestrator triggered: all tasks complete, nudging Architect")
             except Exception as e:
                 logger.warning(f"[{self.name}] Failed to enqueue auto-orchestration message: {e}")
         

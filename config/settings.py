@@ -14,13 +14,22 @@ from typing import Optional
 load_dotenv()
 
 # ============================================================================
-# REQUESTY API Configuration
+# PROVIDER & MODEL CONFIGURATION
 # ============================================================================
+
+# Requesty router (default)
 REQUESTY_API_KEY = os.getenv("REQUESTY_API_KEY", "")
 REQUESTY_API_BASE_URL = "https://router.requesty.ai/v1/chat/completions"
 
-# Available models via Requesty (check requesty.ai for current list)
+# Z.AI direct API (GLM family). Uses general chat completions endpoint by
+# default; advanced users can override via /api or environment if needed.
+ZAI_API_KEY = os.getenv("ZAI_API_KEY", "")
+ZAI_API_BASE_URL = "https://api.z.ai/api/paas/v4/chat/completions"
+
+# Available models (union across providers; provider choice is configured in
+# settings). These strings are passed directly to the selected provider.
 AVAILABLE_MODELS = [
+    # Requesty-routed models
     "openai/gpt-5-nano",
     "openai/gpt-4o-mini",
     "openai/gpt-4o",
@@ -30,6 +39,14 @@ AVAILABLE_MODELS = [
     "google/gemini-1.5-pro",
     "mistral/mistral-large",
     "meta-llama/llama-3.1-70b",
+    # Z.AI GLM models (direct Z.AI provider)
+    "glm-4.6",
+    "glm-4.5",
+    "glm-4.5-air",
+    "glm-4.5-x",
+    "glm-4.5-airx",
+    "glm-4.5-flash",
+    "glm-4-32b-0414-128k",
 ]
 
 # Default model for agents
@@ -110,8 +127,9 @@ MAX_CONCURRENT_API_CALLS = 5
 # Agent speaking probability per round (0.0 - 1.0)
 AGENT_SPEAK_PROBABILITY = 0.6
 
-# Maximum tokens per response (very high to allow for reasoning tokens + output)
-MAX_RESPONSE_TOKENS = 100000
+# Maximum tokens per response (balanced for efficiency)
+# Most responses don't need 100k tokens - use a reasonable default
+MAX_RESPONSE_TOKENS = 16000
 
 # Temperature for response generation
 DEFAULT_TEMPERATURE = 0.8
@@ -136,9 +154,13 @@ def validate_config():
 
     custom_base = (settings.get("api_base_url", "") or "").strip()
     custom_key = (settings.get("api_key", "") or "").strip()
+    zai_key = (settings.get("zai_api_key", "") or "").strip() or ZAI_API_KEY
 
-    if not REQUESTY_API_KEY and not (custom_base and custom_key):
-        errors.append("No API key configured. Set REQUESTY_API_KEY in .env or configure a custom provider via /api.")
+    if not REQUESTY_API_KEY and not (custom_base and custom_key) and not zai_key:
+        errors.append(
+            "No API key configured. Set REQUESTY_API_KEY in .env, configure a custom provider via /api, "
+            "or provide ZAI_API_KEY / z.ai settings."
+        )
     
     if errors:
         return False, errors
@@ -147,8 +169,9 @@ def validate_config():
 # ============================================================================
 # Tool Usage Configuration
 # ============================================================================
-# Maximum tokens for tool-using responses (needs more for reasoning)
-TOOL_MAX_TOKENS = 128000
+# Maximum tokens for tool-using responses (needs more for code generation)
+# 32k is sufficient for most code files while being more efficient
+TOOL_MAX_TOKENS = 32000
 
 # Default scratch directory (use get_scratch_dir() for project-aware path)
 SCRATCH_DIR = DATA_DIR.parent / "scratch"

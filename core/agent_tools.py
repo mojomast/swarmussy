@@ -16,6 +16,8 @@ from typing import Dict, List, Optional, Any, Tuple
 import logging
 import aiofiles
 
+from core.models import Message, MessageRole, MessageType, AgentStatus, TaskStatus
+
 # Conditional import for file locking (Unix only)
 try:
     import fcntl
@@ -230,6 +232,7 @@ class AgentToolExecutor:
             "update_task_status": self._update_task_status,
             "append_decision_log": self._append_decision_log,
             "append_team_log": self._append_team_log,
+            "complete_my_task": self._complete_my_task,
         }
         
         if tool_name not in tool_map:
@@ -1126,7 +1129,7 @@ class AgentToolExecutor:
         else:
             content = dashboard_section
 
-        # Write to shared/devplan.md
+        # Write to shared/devplan.md (Architect's internal tracking)
         write_result = await self._write_file({
             "path": "shared/devplan.md",
             "content": content,
@@ -1135,11 +1138,163 @@ class AgentToolExecutor:
         if not write_result.get("success"):
             return {"success": False, "error": write_result.get("error", "Failed to write devplan.md")}
 
+        # Also generate a user-facing dashboard.md with cleaner formatting
+        user_dashboard = self._generate_user_dashboard(agents, tasks, status_counts, tasks_by_agent, blockers)
+        await self._write_file({
+            "path": "shared/dashboard.md",
+            "content": user_dashboard,
+        })
+
         return {
             "success": True,
             "result": {
-                "message": "Devplan dashboard updated",
-                "path": "shared/devplan.md",
+                "message": "Devplan and dashboard updated",
+                "paths": ["shared/devplan.md", "shared/dashboard.md"],
+            },
+        }
+
+    def _generate_user_dashboard(self, agents, tasks, status_counts, tasks_by_agent, blockers) -> str:
+        """Generate a clean, user-facing dashboard showing current project status."""
+        from datetime import datetime
+        
+        lines = []
+        lines.append("# 📊 Project Dashboard")
+        lines.append("")
+        lines.append(f"*Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*")
+        lines.append("")
+        
+        # Progress bar
+        total = len(tasks)
+        completed = status_counts.get("completed", 0)
+        if total > 0:
+            pct = int((completed / total) * 100)
+            filled = int(pct / 5)
+            bar = "█" * filled + "░" * (20 - filled)
+            lines.append(f"## Progress: [{bar}] {pct}% ({completed}/{total} tasks)")
+        else:
+            lines.append("## Progress: No tasks yet")
+        lines.append("")
+        
+        # Current Status Summary
+        lines.append("## 🔄 Current Status")
+        lines.append("")
+        in_progress = [t for t in tasks if getattr(t.status, "value", str(t.status)) == "in_progress"]
+        if in_progress:
+            lines.append("**Currently Working On:**")
+            for t in in_progress[:5]:  # Show max 5
+                desc = t.description.strip().replace("\n", " ")[:80]
+                lines.append(f"- 🔄 {desc}")
+            lines.append("")
+        
+        pending = [t for t in tasks if getattr(t.status, "value", str(t.status)) == "pending"]
+        if pending:
+            lines.append("**Up Next:**")
+            for t in pending[:3]:  # Show max 3
+                desc = t.description.strip().replace("\n", " ")[:80]
+                lines.append(f"- ⏳ {desc}")
+            if len(pending) > 3:
+                lines.append(f"- ... and {len(pending) - 3} more pending")
+            lines.append("")
+        
+        # Blockers (important for user visibility)
+        if blockers:
+            lines.append("## ⚠️ Blockers & Issues")
+            lines.append("")
+            for t in blockers:
+                desc = (t.result or t.description).strip().replace("\n", " ")[:120]
+                lines.append(f"- ❌ {desc}")
+            lines.append("")
+        
+        # Active Agents
+        lines.append("## 👥 Active Agents")
+        lines.append("")
+        for agent in agents:
+            status = getattr(agent, "status", None)
+            status_str = status.value if status else "unknown"
+            icon = "🟢" if status_str == "working" else "⚪"
+            task_count = len(tasks_by_agent.get(agent.name, []))
+            lines.append(f"- {icon} **{agent.name}** ({task_count} tasks)")
+        lines.append("")
+        
+        # Recent Completions
+        completed_tasks = [t for t in tasks if getattr(t.status, "value", str(t.status)) == "completed"]
+        if completed_tasks:
+            lines.append("## ✅ Recently Completed")
+            lines.append("")
+            for t in completed_tasks[-5:]:  # Show last 5
+                desc = t.description.strip().replace("\n", " ")[:60]
+                lines.append(f"- ✓ {desc}")
+            lines.append("")
+        
+        return "\n".join(lines)
+
+    async def _complete_my_task(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Mark the agent's currently assigned task as complete.
+
+        This is the preferred way for workers to signal task completion.
+        It updates the task registry and sets the agent status to IDLE.
+        """
+        result_summary = (args.get("result") or "").strip()
+
+        # Get the agent's current task from the chatroom
+        from core.chatroom import get_chatroom
+        from core.task_manager import get_task_manager
+
+        chatroom = await get_chatroom()
+        agent = chatroom._agents.get(self.agent_id)
+
+        if not agent:
+            return {"success": False, "error": "Agent not found in chatroom"}
+
+        task_id = getattr(agent, "current_task_id", None)
+        if not task_id:
+            return {"success": False, "error": "No task currently assigned to you"}
+
+        tm = get_task_manager()
+        task = tm.complete_task(task_id, result=result_summary or "Task completed successfully")
+
+        if not task:
+            return {"success": False, "error": f"Failed to complete task {task_id}"}
+
+        # Update agent state
+        agent.status = AgentStatus.IDLE
+        agent.current_task_id = None
+        agent.current_task_description = ""
+
+        logger.info(f"[{self.agent_name}] Completed task {task_id} via complete_my_task tool")
+
+        # Check if all tasks are done and trigger auto-resume
+        all_tasks = tm.get_all_tasks()
+        open_tasks = [t for t in all_tasks if t.status in (TaskStatus.PENDING, TaskStatus.IN_PROGRESS)]
+        completed_tasks = [t for t in all_tasks if t.status == TaskStatus.COMPLETED]
+
+        auto_resume_triggered = False
+        if not open_tasks and completed_tasks:
+            try:
+                auto_msg = Message(
+                    content=(
+                        f"Phase milestone reached: {len(completed_tasks)} task(s) completed, 0 remaining. "
+                        "Bossy McArchitect: Review the devplan, check what work remains in the master plan, "
+                        "and assign the next batch of tasks to keep development moving."
+                    ),
+                    sender_name="Auto Orchestrator",
+                    sender_id="auto_orchestrator",
+                    role=MessageRole.HUMAN,
+                    message_type=MessageType.CHAT
+                )
+                await chatroom._broadcast_message(auto_msg)
+                for a in list(chatroom._agents.values()):
+                    await a.process_incoming_message(auto_msg)
+                auto_resume_triggered = True
+                logger.info("Auto-orchestrator triggered via complete_my_task: all tasks complete")
+            except Exception as e:
+                logger.warning(f"Failed to trigger auto-resume: {e}")
+
+        return {
+            "success": True,
+            "result": {
+                "message": f"Task {task_id} marked as complete",
+                "auto_resume_triggered": auto_resume_triggered,
             },
         }
 
@@ -1860,6 +2015,23 @@ TOOL_DEFINITIONS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "complete_my_task",
+            "description": "Mark your currently assigned task as complete. Call this when you have finished your assigned work. This updates the task registry and frees you for new assignments.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "result": {
+                        "type": "string",
+                        "description": "Brief summary of what was accomplished (e.g. 'Implemented ECS core with Entity, Component, System classes')"
+                    }
+                },
+                "required": ["result"]
+            },
+        },
+    },
 ]
 
 
@@ -1898,6 +2070,7 @@ WORKER_TOOL_NAMES = {
     "append_file",
     "get_project_structure",
     "scaffold_project",
+    "complete_my_task",  # Workers use this to signal task completion
 }
 
 WORKER_TOOLS = [t for t in TOOL_DEFINITIONS if t["function"]["name"] in WORKER_TOOL_NAMES]

@@ -25,15 +25,23 @@ DEFAULT_SETTINGS = {
     "architect_model": "openai/gpt-5-nano",
     "swarm_model": "openai/gpt-5-nano",
     "agent_models": {},  # Optional per-agent model overrides keyed by agent name
+    "default_provider": "requesty",  # requesty | zai | openai | custom
+    "architect_provider": "requesty",
+    "swarm_provider": "requesty",
+    "zai_api_base_url": "",  # Optional override; falls back to config.settings.ZAI_API_BASE_URL
+    "zai_api_key": "",       # Optional override; falls back to config.settings.ZAI_API_KEY
     "disabled_agents": [],
     "theme": "dark",
-    "max_tokens": 100000,
+    "max_tokens": 16000,
     "temperature": 0.8,
     "thinking_tokens": 50000,
     "max_tool_depth": 250,  # Allow agents to chain up to 250 tool calls when working
     "load_previous_history": True,  # Whether to load prior chat history on startup
     "api_base_url": "",
     "api_key": "",
+    # Tool identifier for API headers (to spoof as different tools)
+    "tool_identifier": "swarm",  # swarm | claude-code | cursor | windsurf | aider | continue | custom
+    "custom_tool_id": "",  # Custom tool ID when tool_identifier is "custom"
 }
 
 SETTINGS_FILE = Path(__file__).parent.parent / "data" / "settings.json"

@@ -321,6 +321,27 @@ After automated tests pass, manually verify:
     - Confirm in the AGENTS panel that there is at most one Codey, Pixel, Bugsy, Deployo, Checky, and Docy at any time (no `Codey McBackend 2`, `3`, etc.).
     - Verify that repeated `spawn_worker` calls for these roles simply reuse the existing agent instances.
 
+14. **DevPlan vs Dashboard Files**:
+    - Run a project long enough for the Architect to create a master plan and several tasks.
+    - Inspect `projects/<name>/scratch/shared/` and verify that:
+        - `master_plan.md` contains the long-form architecture/phase plan.
+        - `devplan.md` contains the Architect's internal tracker (phases, detailed tasks, notes) including a `<!-- LIVE_DASHBOARD_START -->` section.
+        - `dashboard.md` exists and shows a concise, user-facing snapshot (progress bar, "Currently Working On", "Up Next", blockers, active agents, recent completions).
+    - In the TUI, confirm that the right sidebar DEVPLAN panel is rendering the same content as `dashboard.md`.
+    - Use `/devplan` in the TUI and verify that the raw `devplan.md` content (or a truncated slice) is printed to chat for debugging.
+
+15. **Task Completion via `complete_my_task` + Auto-Orchestrator**:
+    - Start a project, let the Architect assign a few concrete coding tasks, then allow workers to run.
+    - In the logs, confirm that workers call the `complete_my_task` tool when they are done, and that their agent cards flip back to `IDLE` with no lingering `current_task_id`.
+    - After the final open task completes, watch for a human-role "Auto Orchestrator" message indicating that a phase milestone was reached and asking the Architect to start the next phase or summarize deliverables.
+    - Verify that the next auto-chat tick kicks off a new round and that the dashboard/devplan are updated to reflect the new phase or final project status.
+
+16. **API Provider & Tool Identifier Configuration**:
+    - Open Settings → Models and Settings → API in the TUI (Ctrl+S).
+    - Set Architect/Worker providers to different values (`requesty`, `zai`, `openai`, `custom`) and provide the appropriate keys or base URLs as needed for your environment.
+    - Change the tool identifier to several options (e.g. `claude-code`, `cursor`, `windsurf`, or a custom string) and verify via server-side logs or a proxy that the outgoing `User-Agent` / tool identity header changes accordingly.
+    - Confirm that changing providers and tool identifiers does not break the swarm's orchestration flow (Architect → workers → devplan/dashboard updates still function as expected).
+
 ---
 
 ## Contact
