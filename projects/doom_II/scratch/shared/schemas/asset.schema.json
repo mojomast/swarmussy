@@ -1,0 +1,13 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Asset",
+  "type": "object",
+  "required": ["id","type","path"],
+  "properties": {
+    "id": {"type": "string"},
+    "type": {"type": "string", "enum": ["texture","model","audio","script"]},
+    "path": {"type": "string"},
+    "metadata": {"type": "object"}
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,4 @@
+- Levels admin requires /levels API integration
+- UI: list, detail, create/edit modal with server validation mirroring
+- Dev server: CORS-friendly, proxy-like behavior
+- Files created: levels-admin.html (UI), server.js (dev server), README_levels_admin.md, optional docker/npm scaffolding in future

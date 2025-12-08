@@ -1,0 +1,41 @@
+/* Basic levels admin UI styling for a clean admin panel */
+:root{
+  --bg: #0b1020;
+  --card: #141a2b;
+  --muted: #9aa4b2;
+  --primary: #6ea8fe;
+  --green: #38d39f;
+  --danger: #e96a6a;
+}
+*{box-sizing:border-box}
+html,body,#app{height:100%}
+body{margin:0;font-family:Inter,ui-sans-serif,system-ui,Arial;background:radial-gradient(circle at 20% -10%, rgba(110,168,254,.15), transparent 40%), radial-gradient(circle at 100% 0%, rgba(100,240,260,.12), transparent 40%), #0a0f1d;color:#e7eaf6}
+.container{display:grid;grid-template-columns:1fr 420px;gap:20px; padding:20px; height:calc(100% - 0px)}
+.list-panel{background:linear-gradient(180deg,#11162a,#0d1220);border-radius:12px;padding:16px;overflow:auto}
+.detail-panel{background:linear-gradient(180deg,#11162a,#0d1220);border-radius:12px;padding:16px;display:flex;flex-direction:column}
+.toolbar{display:flex;gap:8px;align-items:center;margin-bottom:8px}
+.btn{background:#1e2540;border:1px solid #2a2f63;color:#e8eaff;padding:9px 12px;border-radius:6px;cursor:pointer}
+.btn.primary{background:#4a7bff;border-color:#5a8bff}
+.btn.danger{background:#7a1d1d;border-color:#a31313}
+.btn[disabled]{opacity:.5;cursor:not-allowed}
+.levels-table{width:100%;border-collapse:collapse;margin-top:8px}
+.levels-table th,.levels-table td{border-bottom:1px solid #2a2f63;padding:8px 6px;text-align:left;font-size:14px}
+.empty{padding:20px;text-align:center;color:#9aa4b2}
+.status{min-height:1.2em;margin-left:8px}
+.detail-content{padding:8px 0;color:#d9e6ff}
+.detail-panel .actions{gap:8px}
+.modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center}
+.modal{background:#0f1320;border-radius:8px;width:520px;max-width:90%;padding:0;overflow:hidden}
+.modal-header{display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border-bottom:1px solid #2a2f63;background:#141a2b}
+.modal-body{padding:14px 16px}
+.form-row{display:flex;flex-direction:column;margin-bottom:10px}
+.form-row label{font-size:13px;margin-bottom:4px;color:#cbd6f5}
+.form-row input,.form-row textarea,.form-row select{padding:8px;border-radius:6px;border:1px solid #2a2f63;background:#0b1020;color:#e7eaff}
+.form-row textarea{min-height:90px;resize:vertical}
+.error{color:#ff9a9a;font-size:12px;height:1em}
+.modal-footer{padding:12px 16px;border-top:1px solid #2a2f63;background:#141a2b;text-align:right}
+.close{background:transparent;border:0;font-size:22px;line-height:1;cursor:pointer;color:#d8e4ff}
+@media (max-width: 1024px){
+  .container{grid-template-columns:1fr; height:auto}
+  .detail-panel{order:2}
+}

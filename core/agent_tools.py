@@ -212,6 +212,9 @@ class AgentToolExecutor:
             "delete_file": self._delete_file,
             "create_folder": self._create_folder,
             "search_code": self._search_code,
+            "get_git_status": self._get_git_status,
+            "get_git_diff": self._get_git_diff,
+            "git_commit": self._git_commit,
             "run_command": self._run_command,
             "claim_file": self._claim_file,
             "release_file": self._release_file,
@@ -586,6 +589,194 @@ class AgentToolExecutor:
             return {"success": False, "error": "Command timed out (30s limit)"}
         except Exception as e:
             return {"success": False, "error": f"Command failed: {e}"}
+
+    async def _get_git_status(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Get git status for the current project's workspace (read-only)."""
+        from pathlib import Path
+
+        # Run git from the repo root, but restrict the status to the current
+        # project scratch/shared workspace so agents don't see or reason about
+        # unrelated files.
+        repo_root = Path(__file__).parent.parent
+
+        try:
+            rel = self.agent_workspace.relative_to(repo_root)
+            pathspec = str(rel)
+        except ValueError:
+            # Fallback: just show status for the current working directory
+            pathspec = "."
+
+        cmd = f"git status --short -- {pathspec}"
+
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=str(repo_root),
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=20)
+
+            return {
+                "success": proc.returncode == 0,
+                "result": {
+                    "command": cmd,
+                    "stdout": stdout.decode("utf-8", errors="replace")[:5000],
+                    "stderr": stderr.decode("utf-8", errors="replace")[:2000],
+                    "return_code": proc.returncode,
+                },
+            }
+        except asyncio.TimeoutError:
+            return {"success": False, "error": "git status timed out (20s limit)"}
+        except Exception as e:
+            return {"success": False, "error": f"git status failed: {e}"}
+
+    async def _get_git_diff(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Get a summarized git diff for the current project's workspace (read-only)."""
+        from pathlib import Path
+
+        repo_root = Path(__file__).parent.parent
+
+        # Optional narrower path relative to the agent workspace
+        rel_path = (args.get("path") or "").strip()
+
+        if rel_path:
+            try:
+                target = (self.agent_workspace / rel_path).resolve()
+                rel = target.relative_to(repo_root)
+                pathspec = str(rel)
+            except Exception:
+                pathspec = rel_path
+        else:
+            try:
+                rel = self.agent_workspace.relative_to(repo_root)
+                pathspec = str(rel)
+            except ValueError:
+                pathspec = "."
+
+        cmd = f"git diff --stat -- {pathspec}"
+
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=str(repo_root),
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+
+            return {
+                "success": proc.returncode == 0,
+                "result": {
+                    "command": cmd,
+                    "stdout": stdout.decode("utf-8", errors="replace")[:8000],
+                    "stderr": stderr.decode("utf-8", errors="replace")[:2000],
+                    "return_code": proc.returncode,
+                },
+            }
+        except asyncio.TimeoutError:
+            return {"success": False, "error": "git diff timed out (30s limit)"}
+        except Exception as e:
+            return {"success": False, "error": f"git diff failed: {e}"}
+    
+    async def _git_commit(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Stage and commit changes for the current project's workspace.
+
+        Safety rules:
+        - Only Checky McManager or Deployo McOps may invoke this tool.
+        - Commits are restricted to the active project's scratch/shared
+          workspace so other code in the repo is not touched.
+        - This tool never pushes to remotes; the human is responsible for
+          any git push / PR operations.
+        """
+        from pathlib import Path
+
+        message = (args.get("message") or "").strip()
+        if not message:
+            return {"success": False, "error": "message is required"}
+
+        lower = (self.agent_name or "").lower()
+        if "checky mcmanager" not in lower and "deployo mcops" not in lower:
+            return {
+                "success": False,
+                "error": "Only Checky McManager or Deployo McOps can perform git commits. "
+                         "Ask them to review and commit on your behalf.",
+            }
+
+        repo_root = Path(__file__).parent.parent
+
+        try:
+            rel_workspace = self.agent_workspace.relative_to(repo_root)
+            pathspec = str(rel_workspace)
+        except ValueError:
+            # Fallback: commit from the current workspace directory
+            repo_root = self.agent_workspace
+            pathspec = "."
+
+        try:
+            # First stage changes under the workspace
+            add_proc = await asyncio.create_subprocess_exec(
+                "git",
+                "add",
+                pathspec,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=str(repo_root),
+            )
+            add_stdout, add_stderr = await asyncio.wait_for(add_proc.communicate(), timeout=30)
+
+            add_out = add_stdout.decode("utf-8", errors="replace")
+            add_err = add_stderr.decode("utf-8", errors="replace")
+            if add_proc.returncode != 0:
+                return {
+                    "success": False,
+                    "error": f"git add failed: {add_err.strip() or 'non-zero exit code'}",
+                    "result": {
+                        "step": "git add",
+                        "command": f"git add {pathspec}",
+                        "stdout": add_out[:3000],
+                        "stderr": add_err[:2000],
+                        "return_code": add_proc.returncode,
+                    },
+                }
+
+            # Then commit with the provided message
+            commit_proc = await asyncio.create_subprocess_exec(
+                "git",
+                "commit",
+                "-m",
+                message,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=str(repo_root),
+            )
+            commit_stdout, commit_stderr = await asyncio.wait_for(commit_proc.communicate(), timeout=30)
+
+            c_out = commit_stdout.decode("utf-8", errors="replace")
+            c_err = commit_stderr.decode("utf-8", errors="replace")
+
+            result_payload = {
+                "step": "git commit",
+                "command": f"git commit -m '<message>' -- {pathspec}",
+                "stdout": c_out[:5000],
+                "stderr": c_err[:2000],
+                "return_code": commit_proc.returncode,
+            }
+
+            if commit_proc.returncode != 0:
+                # Common case: nothing to commit
+                return {
+                    "success": False,
+                    "error": c_err.strip() or "git commit failed",
+                    "result": result_payload,
+                }
+
+            return {"success": True, "result": result_payload}
+
+        except asyncio.TimeoutError:
+            return {"success": False, "error": "git commit timed out (30s limit)"}
+        except Exception as e:
+            return {"success": False, "error": f"git commit failed: {e}"}
     
     async def _claim_file(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Claim exclusive access to a file."""
@@ -1178,8 +1369,8 @@ TOOL_DEFINITIONS = [
                     }
                 },
                 "required": ["path"]
-            }
-        }
+            },
+        },
     },
     {
         "type": "function",
@@ -1199,8 +1390,8 @@ TOOL_DEFINITIONS = [
                     }
                 },
                 "required": ["path", "content"]
-            }
-        }
+            },
+        },
     },
     {
         "type": "function",
@@ -1228,8 +1419,8 @@ TOOL_DEFINITIONS = [
                     }
                 },
                 "required": ["path", "start_line", "end_line", "new_content"]
-            }
-        }
+            },
+        },
     },
     {
         "type": "function",
@@ -1253,8 +1444,8 @@ TOOL_DEFINITIONS = [
                     }
                 },
                 "required": ["path", "old_string", "new_string"]
-            }
-        }
+            },
+        },
     },
     {
         "type": "function",
@@ -1270,7 +1461,7 @@ TOOL_DEFINITIONS = [
                     }
                 }
             }
-        }
+        },
     },
     {
         "type": "function",
@@ -1286,8 +1477,8 @@ TOOL_DEFINITIONS = [
                     }
                 },
                 "required": ["path"]
-            }
-        }
+            },
+        },
     },
     {
         "type": "function",
@@ -1307,8 +1498,8 @@ TOOL_DEFINITIONS = [
                     }
                 },
                 "required": ["source", "destination"]
-            }
-        }
+            },
+        },
     },
     {
         "type": "function",
@@ -1324,8 +1515,8 @@ TOOL_DEFINITIONS = [
                     }
                 },
                 "required": ["path"]
-            }
-        }
+            },
+        },
     },
     {
         "type": "function",
@@ -1345,8 +1536,8 @@ TOOL_DEFINITIONS = [
                     }
                 },
                 "required": ["query"]
-            }
-        }
+            },
+        },
     },
     {
         "type": "function",
@@ -1362,8 +1553,53 @@ TOOL_DEFINITIONS = [
                     }
                 },
                 "required": ["command"]
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_git_status",
+            "description": "View git status for the current project's scratch/shared workspace. Read-only wrapper around 'git status --short'.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_git_diff",
+            "description": "View a summarized git diff for the current project's scratch/shared workspace. Read-only wrapper around 'git diff --stat'.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Optional path (relative to the workspace) to narrow the diff."
+                    }
+                }
             }
-        }
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "git_commit",
+            "description": "Stage and commit changes for the current project's scratch/shared workspace. Only Checky McManager or Deployo McOps may call this tool. This tool NEVER pushes to remotes.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "message": {
+                        "type": "string",
+                        "description": "Commit message summarizing the work being checked in."
+                    }
+                },
+                "required": ["message"]
+            },
+        },
     },
     {
         "type": "function",
@@ -1379,8 +1615,8 @@ TOOL_DEFINITIONS = [
                     }
                 },
                 "required": ["path"]
-            }
-        }
+            },
+        },
     },
     {
         "type": "function",
@@ -1396,8 +1632,8 @@ TOOL_DEFINITIONS = [
                     }
                 },
                 "required": ["path"]
-            }
-        }
+            },
+        },
     },
     {
         "type": "function",
@@ -1406,9 +1642,10 @@ TOOL_DEFINITIONS = [
             "description": "See which files are currently claimed/locked by agents.",
             "parameters": {
                 "type": "object",
-                "properties": {}
-            }
-        }
+                "properties": {},
+                "required": []
+            },
+        },
     },
     {
         "type": "function",
@@ -1424,8 +1661,8 @@ TOOL_DEFINITIONS = [
                     }
                 },
                 "required": ["role"]
-            }
-        }
+            },
+        },
     },
     {
         "type": "function",
@@ -1441,8 +1678,8 @@ TOOL_DEFINITIONS = [
                     }
                 },
                 "required": ["description"]
-            }
-        }
+            },
+        },
     },
     {
         "type": "function",
@@ -1462,8 +1699,8 @@ TOOL_DEFINITIONS = [
                     }
                 },
                 "required": ["agent_name", "description"]
-            }
-        }
+            },
+        },
     },
     {
         "type": "function",
@@ -1488,8 +1725,8 @@ TOOL_DEFINITIONS = [
                     }
                 },
                 "required": ["task_id", "status"]
-            }
-        }
+            },
+        },
     },
     {
         "type": "function",
@@ -1500,8 +1737,8 @@ TOOL_DEFINITIONS = [
                 "type": "object",
                 "properties": {},
                 "required": []
-            }
-        }
+            },
+        },
     },
     {
         "type": "function",
@@ -1521,8 +1758,8 @@ TOOL_DEFINITIONS = [
                     }
                 },
                 "required": ["path", "content"]
-            }
-        }
+            },
+        },
     },
     {
         "type": "function",
@@ -1543,8 +1780,8 @@ TOOL_DEFINITIONS = [
                     }
                 },
                 "required": ["project_type", "project_name"]
-            }
-        }
+            },
+        },
     },
     {
         "type": "function",
@@ -1564,7 +1801,7 @@ TOOL_DEFINITIONS = [
                     }
                 }
             }
-        }
+        },
     },
     {
         "type": "function",
@@ -1575,9 +1812,54 @@ TOOL_DEFINITIONS = [
                 "type": "object",
                 "properties": {},
                 "required": []
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "append_decision_log",
+            "description": "Append a structured entry to the shared decisions log (shared/decisions.md).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": "Short title for the decision."
+                    },
+                    "details": {
+                        "type": "string",
+                        "description": "Longer description of the decision and context."
+                    }
+                }
             }
-        }
-    }
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "append_team_log",
+            "description": "Append an event entry to the shared team log (shared/team_log.md).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "summary": {
+                        "type": "string",
+                        "description": "Short one-line summary of the event."
+                    },
+                    "category": {
+                        "type": "string",
+                        "description": "Optional category label (e.g. planning, risk, release)."
+                    },
+                    "details": {
+                        "type": "string",
+                        "description": "Optional longer description of the event."
+                    }
+                },
+                "required": ["summary"]
+            },
+        },
+    },
 ]
 
 
@@ -1608,6 +1890,8 @@ WORKER_TOOL_NAMES = {
     "create_folder",
     "search_code",
     "run_command",
+    "get_git_status",
+    "get_git_diff",
     "claim_file",
     "release_file",
     "get_file_locks",
@@ -1624,17 +1908,26 @@ def get_tools_for_agent(agent_name: str) -> list:
     # Architect gets full orchestration + dashboard tools
     if "Architect" in agent_name:
         return ORCHESTRATOR_TOOLS
-    # Project Manager can see swarm state for reporting, but cannot orchestrate
+
     lowered = agent_name.lower()
+
+    # Project Manager can see swarm state for reporting and can commit after approvals
     if "checky mcmanager" in lowered or "project_manager" in lowered:
         pm_tools = list(WORKER_TOOLS)
-        # PM gets visibility into swarm state and can manage tasks,
-        # but does not spawn workers or assign tasks directly.
-        for tool_name in ["get_swarm_state", "create_task", "update_task_status"]:
+        for tool_name in ["get_swarm_state", "create_task", "update_task_status", "git_commit"]:
             tool_def = next((t for t in TOOL_DEFINITIONS if t["function"]["name"] == tool_name), None)
             if tool_def and tool_def not in pm_tools:
                 pm_tools.append(tool_def)
         return pm_tools
+
+    # DevOps gets worker tools plus git commit for release automation
+    if "deployo mcops" in lowered or "devops" in lowered:
+        devops_tools = list(WORKER_TOOLS)
+        tool_def = next((t for t in TOOL_DEFINITIONS if t["function"]["name"] == "git_commit"), None)
+        if tool_def and tool_def not in devops_tools:
+            devops_tools.append(tool_def)
+        return devops_tools
+
     return WORKER_TOOLS
 
 

@@ -1,0 +1,4 @@
+# Ignore local env and binaries
+.env
+.env.local
+*.log

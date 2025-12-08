@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Levels Admin</title>
+  <link rel="stylesheet" href="levels-admin.css" />
+</head>
+<body>
+  <header class="nav" aria-label="Top navigation">
+    <h1>Levels Admin</h1>
+  </header>
+  <main class="container" id="app" aria-label="Levels admin">
+    <section class="list-panel" aria-label="Levels list panel">
+      <div class="toolbar">
+        <button id="btnNew" class="btn primary" aria-label="Create new level">New Level</button>
+        <span id="loadingHint" class="hint" aria-live="polite"></span>
+      </div>
+      <div id="levelsStatus" class="status" aria-live="polite"></div>
+      <table class="levels-table" aria-label="Levels table" id="levelsTable">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Name</th>
+            <th>Difficulty</th>
+            <th>Description</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+      <div id="emptyState" class="empty" hidden>No levels found.</div>
+    </section>
+    <section class="detail-panel" aria-label="Level details" id="detailPanel">
+      <h2>Level Details</h2>
+      <div id="detailContent" class="detail-content">Select a level to view details.</div>
+      <div class="actions" aria-label="Detail actions">
+        <button id="btnEdit" class="btn" disabled>Edit</button>
+        <button id="btnDelete" class="btn danger" disabled>Delete</button>
+      </div>
+    </section>
+  </main>
+
+  <!-- Modal -->
+  <div id="modalBackdrop" class="modal-backdrop" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-label="Level form">
+      <div class="modal-header">
+        <h3 id="modalTitle">New Level</h3>
+        <button class="close" id="modalClose" aria-label="Close modal">&times;</button>
+      </div>
+      <div class="modal-body">
+        <form id="levelForm" novalidate>
+          <div class="form-row">
+            <label for="levelName">Name</label>
+            <input id="levelName" name="name" type="text" required maxlength="80" />
+            <span class="error" id="errName" aria-live="polite"></span>
+          </div>
+          <div class="form-row">
+            <label for="levelDesc">Description</label>
+            <textarea id="levelDesc" name="description" maxlength="500"></textarea>
+            <span class="error" id="errDesc" aria-live="polite"></span>
+          </div>
+          <div class="form-row">
+            <label for="levelDiff">Difficulty</label>
+            <select id="levelDiff" name="difficulty" required>
+              <option value="">Select...</option>
+              <option value="Easy">Easy</option>
+              <option value="Medium">Medium</option>
+              <option value="Hard">Hard</option>
+            </select>
+            <span class="error" id="errDiff" aria-live="polite"></span>
+          </div>
+          <div class="form-row">
+            <label for="levelEnabled">Enabled</label>
+            <input id="levelEnabled" type="checkbox" name="enabled" />
+          </div>
+        </form>
+      </div>
+      <div class="modal-footer">
+        <button id="modalCancel" class="btn">Cancel</button>
+        <button id="modalSave" class="btn primary" type="submit" form="levelForm">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="levels-admin.js"></script>
+</body>
+</html>

@@ -1,0 +1,1 @@
+# Requirements to map for QA batch

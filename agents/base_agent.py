@@ -221,6 +221,8 @@ You are part of a high-performance software development swarm. Your goal is to s
 4. **Be Collaborative**: If you need expertise you don't have, ask the relevant specialist (e.g., Backend asking Frontend).
 5. **Use Tools**: Do not write code in chat. Use `write_file` to create actual files.
 6. **No Truncation**: When using `write_file`, you MUST write the FULL content. Never truncate.
+7. **Big Files Are OK**: For core modules (engines, servers, routers, key UI screens), it is acceptable and expected to produce large, self-contained files. Avoid leaving tiny stubs where a full implementation is needed.
+8. **Finish Core Modules First**: Prioritize completing core modules before starting new ones.
 
 ## FILE SYSTEM PROTOCOL:
 - **Shared Work**: Use `shared/filename.ext` for anything other agents need to see (plans, source code, docs).
@@ -305,8 +307,8 @@ Keep chat responses concise and focused on the task. Use the tools for the heavy
         return messages
     
     async def _call_api(
-        self, 
-        messages: List[Dict[str, str]], 
+        self,
+        messages: List[Dict[str, str]],
         use_tools: bool = False
     ) -> Dict[str, Any]:
         """
@@ -319,14 +321,25 @@ Keep chat responses concise and focused on the task. Use the tools for the heavy
         Returns:
             Full API response data, or empty dict on error
         """
-        if not REQUESTY_API_KEY:
-            logger.error("Requesty API key not configured")
+        settings = get_settings()
+        configured_base = settings.get("api_base_url", "") or ""
+        configured_key = settings.get("api_key", "") or ""
+
+        api_base_url = configured_base.strip() or REQUESTY_API_BASE_URL
+        api_key = configured_key.strip() or REQUESTY_API_KEY
+
+        if not api_key:
+            logger.error("API key not configured. Set REQUESTY_API_KEY in .env or configure a custom provider via /api.")
             return {}
-        
+
+        if not api_base_url:
+            logger.error("API base URL not configured.")
+            return {}
+
         session = await self._get_session()
-        
+
         headers = {
-            "Authorization": f"Bearer {REQUESTY_API_KEY}",
+            "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json"
         }
         
@@ -375,7 +388,7 @@ Keep chat responses concise and focused on the task. Use the tools for the heavy
         
         try:
             async with session.post(
-                REQUESTY_API_BASE_URL,
+                api_base_url,
                 headers=headers,
                 json=payload,
                 timeout=aiohttp.ClientTimeout(total=600)  # 10 minutes for large generations
@@ -572,11 +585,16 @@ Keep chat responses concise and focused on the task. Use the tools for the heavy
             # Broadcast result summary for write operations
             if status_callback and tool_name in ["write_file", "append_file", "edit_file"]:
                 if isinstance(result, dict) and result.get("success"):
-                    result_msg = result.get("message", "Done")[:40]
-                    await status_callback(f"✅ {self.name}: {result_msg}")
+                    # Prefer a human-readable result/message (often includes bytes/lines)
+                    result_msg = (
+                        result.get("result")
+                        or result.get("message")
+                        or "Done"
+                    )[:80]
+                    await status_callback(f" {self.name}: {result_msg}")
                 elif isinstance(result, dict) and not result.get("success"):
-                    error_msg = result.get("error", "Failed")[:40]
-                    await status_callback(f"❌ {self.name}: {error_msg}")
+                    error_msg = result.get("error", "Failed")[:80]
+                    await status_callback(f" {self.name}: {error_msg}")
             
             # Add tool result to messages
             messages.append({

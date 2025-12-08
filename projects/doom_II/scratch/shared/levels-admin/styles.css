@@ -1,0 +1,26 @@
+:root {
+  --bg: #0b1020;
+  --surface: #141a2a;
+  --text: #e8eaf6;
+  --muted: #aab4d4;
+  --accent: #7c5cff;
+  --danger: #e74c3c;
+  --card: #1b2340;
+}
+* { box-sizing: border-box; }
+html, body, #layout { height: 100%; }
+body { margin: 0; font-family: Inter, ui-sans-serif, system-ui; background: radial-gradient(circle at 20% -10%, rgba(124,92,255,.25), transparent 40%), radial-gradient(circle at 100% 0%, rgba(0,0,0,.25), transparent 40%), linear-gradient(#0b1020, #0b1020); color: var(--text); }
+.app { padding: 16px; max-width: 1200px; margin: 0 auto; }
+.topbar { display: flex; justify-content: space-between; align-items: center; padding: 8px 0 16px; }
+.title { margin: 0; font-size: 1.5rem; color: #fff; }
+.btn { border: none; padding: 10px 14px; border-radius: 8px; cursor: pointer; font-weight: 600; }
+.btn-primary { background: linear-gradient(135deg, #7c5cff, #4e3fa3); color: white; }
+.btn-secondary { background: #2a3150; color: white; }
+.panel { background: rgba(20,26,42,.9); border: 1px solid #2b2f60; border-radius: 12px; padding: 16px; }
+.layout { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; height: calc(100% - 40px); }
+.levels-table { width: 100%; border-collapse: collapse; }
+.levels-table th, .levels-table td { padding: 8px 12px; border-bottom: 1px solid #2b2f60; }
+.loading, .error, .empty { padding: 8px; color: var(--muted); }
+.detail-content { min-height: 120px; padding: 8px 0; }
+.detail-actions { display: flex; gap: 8px; }
+@media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }

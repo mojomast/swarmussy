@@ -1,0 +1,21 @@
+name: Cleanup Terraform
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Terraform Init & Plan
+        uses: hashicorp/setup-terraform@v1
+        with:
+          terraform_version: latest
+      - name: Terraform Init
+        run: terraform init -backend=false
+      - name: Terraform Plan
+        run: terraform plan

@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cleanup-api
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: cleanup-api
+  template:
+    metadata:
+      labels:
+        app: cleanup-api
+    spec:
+      containers:
+      - name: cleanup-api
+        image: cleanup/api:latest
+        ports:
+        - containerPort: 8080
+        env:
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: cleanup-secrets
+              key: database_url
+        - name: REDIS_URL
+          valueFrom:
+            secretKeyRef:
+              name: cleanup-secrets
+              key: redis_url
+        - name: API_BASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: cleanup-secrets
+              key: api_base_url
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cleanup-api
+spec:
+  selector:
+    app: cleanup-api
+  ports:
+  - port: 8080
+    targetPort: 8080
+  type: ClusterIP

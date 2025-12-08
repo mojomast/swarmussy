@@ -1,0 +1,8 @@
+[tool.poetry]
+name = "cleanup-api"
+description = "In-memory RESTful API for cleanup tasks"
+version = "0.1.0"
+
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"

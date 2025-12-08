@@ -1,0 +1,38 @@
+name: CI
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install dependencies
+        run: |
+          cd scratch/shared
+          npm ci
+      - name: TypeScript compile
+        run: |
+          cd scratch/shared
+          npm run build --if-present || npx tsc -p tsconfig.json
+      - name: Run tests
+        run: |
+          cd scratch/shared
+          npm test --silent
+      - name: Build Docker image for Level API
+        run: |
+          cd scratch/shared
+          docker build -f Dockerfile.level_api -t level-api:ci .
+          docker save level-api:ci > level-api-ci.tar
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: level-api-artifact
+          path: level-api-ci.tar

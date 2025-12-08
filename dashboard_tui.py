@@ -31,7 +31,7 @@ from rich.text import Text
 from rich.panel import Panel
 from rich.table import Table
 
-from config.settings import validate_config, ARCHITECT_MODEL, AVAILABLE_MODELS, get_scratch_dir
+from config.settings import validate_config, ARCHITECT_MODEL, AVAILABLE_MODELS, get_scratch_dir, REQUESTY_API_BASE_URL
 from core.chatroom import Chatroom, set_chatroom
 from core.models import Message as ChatMessage, MessageRole, AgentStatus
 from core.task_manager import get_task_manager
@@ -292,11 +292,14 @@ class FileBrowserScreen(ModalScreen):
         option_list = self.query_one("#file-list", OptionList)
         option_list.clear_options()
 
+        # Prefer the shared scratch workspace where agents actually write
+        # project files (scratch/shared). Fall back to the project root if
+        # the shared dir doesn't exist yet.
         if project is None or not project.root.exists():
             option_list.add_option(Option("(no active project)", ""))
             return
 
-        root = project.root
+        root = project.shared_dir if getattr(project, "shared_dir", None) and project.shared_dir.exists() else project.root
 
         paths = []
         try:
@@ -304,10 +307,10 @@ class FileBrowserScreen(ModalScreen):
                 if not path.is_file():
                     continue
                 rel = path.relative_to(root)
-                # Skip hidden and internal folders
+                # Skip hidden and internal folders, but **do** include scratch/
                 if any(part.startswith(".") for part in rel.parts):
                     continue
-                if any(part in {"data", "scratch", "__pycache__", "node_modules"} for part in rel.parts):
+                if any(part in {"data", "__pycache__", "node_modules"} for part in rel.parts):
                     continue
                 paths.append(rel)
         except Exception:
@@ -326,7 +329,10 @@ class FileBrowserScreen(ModalScreen):
         """Load and display the selected file in the preview pane."""
         from core.project_manager import get_project_manager
 
-        rel_value = event.option.value
+        # Textual's Option instances don't expose a generic `.value`; we
+        # stored the relative path in the option's ID, which is available on
+        # the event as `option_id`.
+        rel_value = event.option_id or ""
         if not rel_value:
             return
 
@@ -1095,7 +1101,7 @@ class SwarmDashboard(App):
         await self.init_chatroom()
         self.set_interval(3.0, self.refresh_panels)
         # Periodically advance the swarm when auto_chat is enabled
-        self.set_interval(5.0, self.auto_chat_tick)
+        self.set_interval(1.0, self.auto_chat_tick)
 
     async def init_chatroom(self):
         settings = get_settings()
@@ -1464,6 +1470,7 @@ class SwarmDashboard(App):
             self.chat_log.write(Text("  /clear    - Clear chat", style="dim"))
             self.chat_log.write(Text("  /fix <reason> - Stop & request fix", style="dim"))
             self.chat_log.write(Text("  /snapshot - Snapshot current project folder", style="dim"))
+            self.chat_log.write(Text("  /api      - View or change API base URL and key", style="dim"))
             self.chat_log.write(Text("─" * 50, style="dim"))
             self.chat_log.write(Text(f"Roles: {', '.join(AGENT_CLASSES.keys())}", style="dim"))
         elif cmd == "/settings":
@@ -1497,6 +1504,8 @@ class SwarmDashboard(App):
             await self.action_model(arg)
         elif cmd == "/snapshot":
             await self.action_snapshot(arg)
+        elif cmd in ("/api", "/command"):
+            await self.action_api(arg)
         elif cmd == "/clear":
             self.chat_log.clear()
         elif cmd == "/fix":
@@ -1595,6 +1604,52 @@ class SwarmDashboard(App):
             self.chat_log.write(Text("✅ Snapshot created", style="green"))
         except Exception as e:
             self.chat_log.write(Text(f"❌ Snapshot failed: {e}", style="red"))
+
+    async def action_api(self, arg: str):
+        from core.settings_manager import get_settings
+
+        settings = get_settings()
+        arg = arg.strip()
+
+        if not arg:
+            custom_base = (settings.get("api_base_url", "") or "").strip()
+            custom_key = (settings.get("api_key", "") or "").strip()
+            active_base = custom_base or REQUESTY_API_BASE_URL
+            using_custom = bool(custom_base or custom_key)
+
+            self.chat_log.write(Text("─" * 50, style="dim"))
+            self.chat_log.write(Text("API PROVIDER:", style="yellow bold"))
+            self.chat_log.write(Text(f"  Active base URL: {active_base}", style="dim"))
+            source = "Custom settings (api_base_url/api_key)" if using_custom else "Requesty (.env)"
+            self.chat_log.write(Text(f"  Source: {source}", style="dim"))
+            self.chat_log.write(Text("Usage:", style="yellow"))
+            self.chat_log.write(Text("  /api <base_url> <api_key>", style="dim"))
+            self.chat_log.write(Text("  /api reset            (switch back to Requesty/env)", style="dim"))
+            self.chat_log.write(Text("─" * 50, style="dim"))
+            return
+
+        lower = arg.lower()
+        if lower in ("reset", "clear", "default"):
+            settings.set("api_base_url", "")
+            settings.set("api_key", "")
+            self.chat_log.write(Text("API provider reset to Requesty (.env)", style="green"))
+            return
+
+        parts = arg.split()
+        if len(parts) < 2:
+            self.chat_log.write(Text("Usage: /api <base_url> <api_key>", style="yellow"))
+            return
+
+        base_url = parts[0].strip()
+        api_key = " ".join(parts[1:]).strip()
+
+        if not (base_url.startswith("http://") or base_url.startswith("https://")):
+            self.chat_log.write(Text("Base URL must start with http:// or https://", style="red"))
+            return
+
+        settings.set("api_base_url", base_url)
+        settings.set("api_key", api_key)
+        self.chat_log.write(Text("Custom API provider configured for future calls.", style="green"))
 
     async def action_model(self, arg: str):
         """View or change per-agent models.

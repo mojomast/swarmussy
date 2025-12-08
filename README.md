@@ -21,6 +21,9 @@ A multi-agent AI development system where specialized AI agents collaborate to b
 - **Team Logs** - Shared `scratch/shared/decisions.md` and `scratch/shared/team_log.md` capture decisions, milestones, and major swarm events
 - **Floating File Browser** - Press `Ctrl+F` (or click `📁 FILES` in the TUI header) to browse the current project's tree and preview files
 - **Context-Aware Auto Orchestrator** - Tracks task state and long contexts, injecting handoff prompts when a worker's prompt for a single call nears ~80k tokens
+ - **Git-Aware Local Workflow** - Agents can inspect `git status`/`git diff` for the active project's `scratch/shared` workspace; Checky McManager and Deployo McOps can run a safe, local `git_commit` (no pushes) after review
+ - **Skeptical QA Gate for Commits** - Bugsy McTester reviews changes and tests, emitting `QA DECISION: APPROVED` / `REQUEST_CHANGES`; Checky only commits when QA has approved the scope
+ - **Singleton Workers per Role** - Architect reuses a single Codey/Pixel/Bugsy/Deployo/Checky/Docy per project to avoid multiple workers trampling the same files
 
 ## Agent Roster
 
@@ -162,24 +165,33 @@ The system uses role-based tool access to enforce proper orchestration:
 **Project Manager Tools** (Checky McManager):
 - `get_swarm_state` - Inspect current agents and tasks
 - `create_task`, `update_task_status` - Manage tasks and blockers
-- `read_file`, `write_file` - Maintain status/reporting artifacts (e.g. `status_report.md`, `blockers.md`, `timeline.md`, `decisions.md`)
+- `read_file`, `write_file` - Maintain status/reporting artifacts (e.g. `status_report.md`, `blockers.md`, `timeline.md`, `decisions.md`, `team_log.md`)
+- `get_git_status`, `get_git_diff` - Read-only view of git state/diff for the active project's `scratch/shared` workspace
+- `git_commit` - Stage and commit changes under the active project's `scratch/shared` tree (never pushes; human owns remotes/PRs)
 
 **Worker Tools** (Backend/Frontend/QA/DevOps/Tech Writer):
 - `read_file`, `write_file`, `edit_file`, `append_file` - Code and content operations
 - `list_files`, `search_code` - Navigation and search
 - `run_command` - Safe shell commands (linting, tests, git status, etc.)
+- `get_git_status`, `get_git_diff` - Read-only inspection of git state/diff for the active project's workspace
 - `claim_file`, `release_file`, `get_file_locks` - File locking for concurrent edits
 - `get_project_structure` - High-level project tree
 
 Architect ownership of `devplan.md` and `master_plan.md` is enforced at the tool layer: non‑Architect agents can read these files but cannot modify, move, or delete them, and must instead describe desired changes for Bossy to apply.
 
-### Conversation Flow
+Additionally, git operations are constrained:
+- All git tools run from the repo root but are **scoped to the active project's `scratch/shared` workspace`**.
+- Only Checky McManager and Deployo McOps may call `git_commit`, and the swarm **never** pushes to remotes.
+
+### Conversation & Git Workflow
 
 1. You send a message → **only Bossy McArchitect responds directly to you**.
-2. Architect spawns workers and assigns tasks.
+2. Architect spawns workers (one per core role) and assigns tasks.
 3. Workers execute tasks (with configurable tool call depth, default 250) and log progress/results back to the Architect and Checky (not to the human user).
-4. Architect reviews worker/PM output and responds to you or assigns next tasks.
-5. Repeat until the project is complete.
+4. Bugsy McTester reviews code and tests, then records a clear `QA DECISION: APPROVED` or `REQUEST_CHANGES`.
+5. At phase boundaries, Checky McManager inspects git status/diff and, **only when QA is APPROVED**, calls `git_commit` to checkpoint the current project workspace.
+6. Architect reviews worker/PM/QA output, responds to you, and assigns the next batch of tasks.
+7. Repeat until the project is complete.
 
 ### Tool Call Depth
 

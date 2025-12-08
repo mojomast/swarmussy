@@ -5,6 +5,7 @@ Responsible for tracking progress, managing timelines, and ensuring deliverables
 """
 
 import sys
+import time
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -54,6 +55,23 @@ PM_SYSTEM_PROMPT = """You are Checky McManager, a Technical Project Manager who 
 - `blockers.md`      → Active blockers, owners, and what help is needed.
 - `timeline.md`      → Milestones and schedule.
 - `decisions.md`     → Key technical and process decisions.
+- `team_log.md`      → Chronological log of approvals, releases, and important events.
+
+## Git & Review Workflow:
+- Treat the repo as having a simple, local "main" branch. There is **no git push** in this workflow; only local commits.
+- At natural milestones (feature complete, tests passing, or phase boundary):
+  1. Use `get_git_status` and `get_git_diff` to understand what changed in the current project workspace.
+  2. Ensure **Bugsy McTester (QA)** has:
+     - Written or updated tests for the new work.
+     - Run tests (via tools) and reported results.
+     - Explicitly given an approval in their latest report (e.g. "QA APPROVED" for this scope).
+  3. If QA has **not** approved, or tests look incomplete, you **must not** commit. Instead:
+     - Create or update tasks for QA and the relevant implementers.
+     - Record the pending review state in `status_report.md` / `team_log.md`.
+  4. Only when you are satisfied that the scope is implemented and QA-approved should you call `git_commit` with a clear, descriptive message.
+- Only you (Checky) and Deployo McOps are allowed to call `git_commit`. Other agents should request a review/commit via tasks or the team log, not by committing directly.
+- Each commit message should read like a small PR title (e.g. "feat: implement level loader and tests"), summarizing **what** and **why**, not how.
+- After a successful commit, append a brief entry to `team_log.md` noting what was committed and which tasks it closes.
 
 ## Personality:
 - **Organized**: You love checklists, bullet points, and clear sections.
@@ -126,15 +144,24 @@ class ProjectManager(BaseAgent):
         # Snapshot of the task state: (id, status, assigned_to)
         snapshot = [(t.id, t.status.value, getattr(t, "assigned_to", None)) for t in tasks]
         last_snapshot = getattr(self, "_last_task_snapshot", None)
+        last_time = getattr(self, "_last_task_snapshot_time", 0.0)
+        now = time.time()
+
+        # Cooldown in seconds between Checky updates even if tasks keep changing
+        COOLDOWN = 10.0
 
         # First time we see tasks: report once to establish a baseline
         if last_snapshot is None:
             self._last_task_snapshot = snapshot
+            self._last_task_snapshot_time = now
             return True
 
-        # If anything changed since the last report, speak up
+        # If anything changed since the last report, speak up, but at most once
+        # per cooldown window to avoid spamming on rapid task churn.
         if snapshot != last_snapshot:
             self._last_task_snapshot = snapshot
-            return True
+            if now - last_time >= COOLDOWN:
+                self._last_task_snapshot_time = now
+                return True
 
         return False

@@ -1,0 +1,47 @@
+{
+  "saved_at": "2025-12-07T19:33:08.331880",
+  "messages": [
+    {
+      "id": "c4297b8a-a33a-4d51-8670-81e3fa602238",
+      "role": "system",
+      "content": "Bossy McArchitect has joined the chat.",
+      "sender_name": "System",
+      "sender_id": "system",
+      "timestamp": "2025-12-07T09:43:36.844463",
+      "message_type": "join",
+      "metadata": {}
+    },
+    {
+      "id": "884820e6-b642-4aff-bb2d-6cce87da9222",
+      "role": "system",
+      "content": "Checky McManager has joined the chat.",
+      "sender_name": "System",
+      "sender_id": "system",
+      "timestamp": "2025-12-07T09:43:36.852398",
+      "message_type": "join",
+      "metadata": {}
+    },
+    {
+      "id": "be6993d7-3126-495b-b370-e1bca8906089",
+      "role": "human",
+      "content": "imagine if i spent all the time vibe coding slop instead i fixced my house what would happen",
+      "sender_name": "Kyle",
+      "sender_id": "dashboard_user",
+      "timestamp": "2025-12-07T09:43:53.473279",
+      "message_type": "chat",
+      "metadata": {}
+    },
+    {
+      "id": "ad447945-af56-4926-bfdb-3aaeabbfdb03",
+      "role": "assistant",
+      "content": "If you devote all your time to vibe coding and skip essential house fixes, you\u2019ll likely face safety hazards, rising repair costs, and reduced home value, even if your coding momentum grows. Try timeboxing: tackle critical fixes first (electric, plumbing, leaks), then schedule coding blocks, and I can help draft a master plan and live devplan for your house-improvement project.",
+      "sender_name": "Bossy McArchitect",
+      "sender_id": "8692d0c9-93e6-4da5-92a7-27ceee5b6993",
+      "timestamp": "2025-12-07T09:44:04.453335",
+      "message_type": "chat",
+      "metadata": {
+        "model": "openai/gpt-5-nano"
+      }
+    }
+  ]
+}

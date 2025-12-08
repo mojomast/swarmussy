@@ -1,0 +1,8 @@
+{
+  "name": "core-api-tests",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "test": "node -e \"console.log(\'no tests yet\')\""
+  }
+}

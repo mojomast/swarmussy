@@ -1,0 +1,12 @@
+{
+  "name": "cleanup-api",
+  "version": "0.1.0",
+  "main": "src/server.py",
+  "scripts": {
+    "start": "uvicorn src.server:app --reload",
+    "test": "pytest -q"
+  },
+  "dependencies": {
+    "fastapi": "^0.95.0"
+  }
+}

@@ -1,0 +1,47 @@
+# Dockerfile.template: multi-stage Rust workspace builder with cross-target support
+
+# Default target (can be overridden via build-arg TARGET)
+ARG TARGET=x86_64-unknown-linux-gnu
+FROM rust:1.75-slim AS builder
+
+# Install required system dependencies and the requested Rust target
+RUN rustup set profile minimal && \
+    rustup target add ${TARGET} && \
+    apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      build-essential \
+      pkg-config \
+      libssl-dev \
+      ca-certificates \
+      curl \
+      ca-certificates \
+      && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace
+
+# Copy manifest and workspace sources
+COPY Cargo.toml Cargo.lock ./
+COPY shared ./shared
+COPY engine ./engine
+COPY editor ./editor
+COPY assets ./assets
+COPY shared_models ./shared_models
+COPY desktop ./desktop
+
+# Build all workspace crates for the target
+RUN --mount=type=cache,target=/root/.cargo/registry cargo build --release --workspace --target ${TARGET}
+
+# Package artifacts in a dedicated stage script
+COPY scripts/pack_binaries.sh /scripts/pack_binaries.sh
+RUN chmod +x /scripts/pack_binaries.sh
+
+# Create an artifacts directory and populate it via the pack script
+RUN mkdir -p /artifacts && /scripts/pack_binaries.sh ${TARGET} /artifacts
+
+FROM debian:buster-slim AS runtime
+WORKDIR /workspace
+
+# Copy artifacts from builder stage
+COPY --from=builder /artifacts /artifacts
+
+CMD ["bash"]

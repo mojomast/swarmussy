@@ -519,3 +519,58 @@ Added verbose API request/response logging in the TUI:
 
 *Last updated: December 7, 2025 (evening)*
 *Status: Auto-orchestrator nudge + context handoff online; TUI API log and file browser ready for manual testing*
+
+## Latest Updates (December 8, 2025 - Git-Aware Workflow & Worker Singletons)
+
+### 1. Git Tools and Safety Guarantees
+
+- Added **git-aware tools** in `core/agent_tools.py`:
+  - `get_git_status` → read-only wrapper around `git status --short` scoped to the active project's `scratch/shared` workspace.
+  - `get_git_diff` → read-only wrapper around `git diff --stat` scoped to the same workspace (optionally narrowed by path).
+  - `git_commit` → stages and commits only the active project's `scratch/shared` tree.
+- Safety rules for `git_commit`:
+  - Only **Checky McManager** (Project Manager) or **Deployo McOps** (DevOps) may call this tool.
+  - Pathspec is always constrained to the current project's workspace; other repo content is untouched.
+  - The swarm **never pushes** to remotes; humans remain responsible for `git push` / PRs.
+- All workers can inspect git status/diff via the read-only tools, but they must ask Checky/Deployo to perform commits.
+
+### 2. Review Gate: Bugsy + Checky Before Commits
+
+- **Bugsy McTester (QA)** prompt (`agents/qa_engineer.py`) now:
+  - Uses git-aware tools to inspect exactly what changed before approving.
+  - Clearly labels outcomes at the end of each report with:
+    - `QA DECISION: APPROVED` – scope looks good.
+    - `QA DECISION: REQUEST_CHANGES` – lists blocking issues.
+- **Checky McManager (Project Manager)** prompt (`agents/project_manager.py`) now encodes a git-aware workflow:
+  - At natural milestones (feature complete, tests passing, phase boundary) Checky:
+    1. Calls `get_git_status` and `get_git_diff` to summarize pending changes.
+    2. Confirms Bugsy has written/updated tests, run them, and produced an explicit `QA DECISION` for that scope.
+    3. **Only if QA is APPROVED**, calls `git_commit` with a PR-style message (e.g. `feat: implement level loader and tests`).
+    4. Appends a short entry to `scratch/shared/team_log.md` describing what was committed and which tasks it closes.
+- If QA has not approved, Checky is instructed **not** to commit and instead to:
+  - Open/update tasks for QA and implementers.
+  - Record the pending review state in `status_report.md` / `team_log.md`.
+
+### 3. Worker Singletons to Avoid Collisions
+
+- **Problem**: The Architect could spawn multiple backend/front-end workers of the same role (e.g. five copies of Codey McBackend), all sharing the same workspace and colliding on files.
+- **Solution** (`core/chatroom.py::spawn_agent`):
+  - Introduced a `singleton_roles` set: `{ "project_manager", "backend_dev", "frontend_dev", "qa_engineer", "devops", "tech_writer" }`.
+  - When `spawn_worker` is called for any of these roles and an instance already exists, the chatroom **reuses the existing agent** instead of creating a new one.
+- Effect:
+  - There is at most one Codey, one Pixel, one Bugsy, one Deployo, one Checky, and one Docy active at a time.
+  - Greatly reduces concurrent write collisions in the shared workspace.
+
+### 4. Coding Standards: Big Files & Core Modules
+
+- Global **professional coding standards** in `agents/base_agent.py` were strengthened:
+  - Reiterated **NO MOCK CODE** and "No Truncation" for `write_file`.
+  - Added guidance that **big files are acceptable and expected** for core modules (engines, servers, routers, key UI screens).
+  - Added a rule to **finish core modules first** before spawning more files.
+- **BackendDev (Codey McBackend)** prompt (`agents/backend_dev.py`) now:
+  - Explicitly tells Codey that when he commits to a module (engine core, router, server), he should implement the full working version in that file, even if it becomes hundreds of lines.
+  - Encourages **deepening existing modules** over creating many tiny or near-duplicate files.
+- Combined with the git-aware review/commit flow, long-running projects (e.g. DOOM-style engines) now converge toward a small set of rich, production-quality modules instead of a forest of stubs.
+
+*Last updated: December 8, 2025*
+*Status: Git tools + QA/PM review gate online; worker singletons and coding standards tuned for large, coherent modules*

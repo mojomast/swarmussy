@@ -1,0 +1,2 @@
+# Integration backend tests placeholder
+

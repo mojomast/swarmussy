@@ -1,0 +1,52 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Level",
+  "type": "object",
+  "required": ["id","name","dimensions","tiles","monsters","weapons","assets","spawn_points","version"],
+  "properties": {
+    "id": {"type": "string"},
+    "name": {"type": "string"},
+    "dimensions": {
+      "type": "object",
+      "required": ["width","height","depth"],
+      "properties": {
+        "width": {"type": "number"},
+        "height": {"type": "number"},
+        "depth": {"type": "number"}
+      }
+    },
+    "tiles": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "monsters": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "weapons": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "assets": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "spawn_points": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["x","y","z"],
+        "properties": {
+          "x": {"type": "number"},
+          "y": {"type": "number"},
+          "z": {"type": "number"}
+        }
+      }
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$"
+    }
+  },
+  "additionalProperties": false
+}

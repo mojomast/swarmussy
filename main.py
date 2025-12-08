@@ -231,6 +231,7 @@ class InteractiveChatroom:
         print(f"    {Colors.GREEN}/settings{Colors.RESET}     - Open settings menu")
         print(f"    {Colors.GREEN}/name{Colors.RESET} <n>     - Set your display name")
         print(f"    {Colors.GREEN}/verbose{Colors.RESET}      - Toggle debug output")
+        print(f"    {Colors.GREEN}/api{Colors.RESET} <url> <key> - Configure API base URL and key")
         print(f"    {Colors.GREEN}/quit{Colors.RESET}         - Exit chatroom")
         print()
     
@@ -534,6 +535,48 @@ class InteractiveChatroom:
             self.show_settings_menu()
         elif cmd == "/verbose":
             self.toggle_verbose()
+        elif cmd in ("/api", "/provider", "/command"):
+            from core.settings_manager import get_settings
+            from config.settings import REQUESTY_API_BASE_URL
+
+            settings = get_settings()
+            arg = arg.strip()
+
+            if not arg:
+                custom_base = (settings.get("api_base_url", "") or "").strip()
+                custom_key = (settings.get("api_key", "") or "").strip()
+                active_base = custom_base or REQUESTY_API_BASE_URL
+                using_custom = bool(custom_base or custom_key)
+
+                print()
+                print(f"{Colors.BOLD}{Colors.CYAN}=== API PROVIDER ==={Colors.RESET}")
+                print(f"  Active base URL: {active_base}")
+                source = "Custom settings (api_base_url/api_key)" if using_custom else "Requesty (.env)"
+                print(f"  Source: {source}")
+                print()
+                print("  Usage:")
+                print("    /api <base_url> <api_key>")
+                print("    /api reset            (switch back to Requesty/env)")
+                print()
+            else:
+                lower = arg.lower()
+                if lower in ("reset", "clear", "default"):
+                    settings.set("api_base_url", "")
+                    settings.set("api_key", "")
+                    self.print_system("API provider reset to Requesty (.env)")
+                else:
+                    parts = arg.split()
+                    if len(parts) < 2:
+                        self.print_system("Usage: /api <base_url> <api_key>")
+                    else:
+                        base_url = parts[0].strip()
+                        api_key = " ".join(parts[1:]).strip()
+                        if not (base_url.startswith("http://") or base_url.startswith("https://")):
+                            self.print_system("Base URL must start with http:// or https://")
+                        else:
+                            settings.set("api_base_url", base_url)
+                            settings.set("api_key", api_key)
+                            self.print_system("Custom API provider configured for future calls.")
         elif cmd == "/agents" or cmd == "/bots":
             self.show_agents()
         elif cmd == "/name":
@@ -921,16 +964,21 @@ class InteractiveChatroom:
 def setup_env_interactive():
     """Interactive .env setup if needed."""
     from dotenv import load_dotenv
-    
+    from core.settings_manager import get_settings
+
     env_path = Path(__file__).parent / ".env"
     existing_key = os.getenv("REQUESTY_API_KEY", "")
+
+    settings = get_settings()
+    custom_base = (settings.get("api_base_url", "") or "").strip()
+    custom_key = (settings.get("api_key", "") or "").strip()
     
     # Try loading .env first
     if env_path.exists():
         load_dotenv(env_path, override=True)
         existing_key = os.getenv("REQUESTY_API_KEY", "")
     
-    if env_path.exists() and existing_key:
+    if (env_path.exists() and existing_key) or (custom_base and custom_key):
         return True
     
     print(f"{Colors.BOLD}{Colors.CYAN}{'='*60}{Colors.RESET}")

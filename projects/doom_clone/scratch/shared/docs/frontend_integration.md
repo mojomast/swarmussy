@@ -1,0 +1,2 @@
+- ProfilePanel uses profile.js contract and bootstrapping to hydrate app state.
+- App shell listens for doom-core-profile-updated events to refresh ProfilePanel data.

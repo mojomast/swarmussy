@@ -17,5 +17,7 @@
   "temperature": 0.8,
   "thinking_tokens": 50000,
   "max_tool_depth": 100,
-  "load_previous_history": true
+  "load_previous_history": false,
+  "api_base_url": "",
+  "api_key": ""
 }

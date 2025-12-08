@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 # Default settings
 DEFAULT_SETTINGS = {
     "username": "You",
-    "round_delay": 15.0,
+    "round_delay": 1.0,
     "response_delay_min": 2.0,
     "response_delay_max": 5.0,
     "max_responders": 3,
@@ -32,6 +32,8 @@ DEFAULT_SETTINGS = {
     "thinking_tokens": 50000,
     "max_tool_depth": 250,  # Allow agents to chain up to 250 tool calls when working
     "load_previous_history": True,  # Whether to load prior chat history on startup
+    "api_base_url": "",
+    "api_key": "",
 }
 
 SETTINGS_FILE = Path(__file__).parent.parent / "data" / "settings.json"

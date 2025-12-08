@@ -1,0 +1,19 @@
+{
+  "name": "ecs-engine-sample",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "dependencies": {
+    "express": "^4.18.2"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "@types/express": "^4.17.22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "echo 'No tests configured'",
+    "start": "node dist/server.js",
+    "lint": "echo 'linting not configured'"
+  }
+}

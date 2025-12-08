@@ -305,6 +305,22 @@ After automated tests pass, manually verify:
     - After all open tasks for a project complete, watch for an "Auto Orchestrator" message prompting next steps and confirm a new round starts without you typing.
     - For heavy-context tasks, monitor logs and the TOKENS panel; when a single worker call grows very large, you should see an "Auto Orchestrator" message asking to hand off work to a fresh worker with a concise summary.
 
+12. **Git-Aware Workflow & Commit Gatekeeper**:
+    - Run a project long enough for workers to produce non-trivial code under `scratch/shared/` (for example, a small backend or game engine slice).
+    - From a shell, run `git status` and confirm that only the current project's workspace (e.g. `projects/<name>/scratch/shared/...`) shows as changed.
+    - In the TUI, watch Bugsy McTester reports for explicit `QA DECISION: APPROVED` / `QA DECISION: REQUEST_CHANGES` lines.
+    - After QA reports APPROVED for a scope, watch Checky McManager's logs for a description of the pending changes and a `git_commit` action.
+    - From a shell, run `git log -n 3` and `git show` to confirm that:
+      - Commits only touch the active project's workspace.
+      - Commit messages look like small PR titles summarizing the work.
+    - Verify there is **no automatic `git push`**; pushing to remotes remains a manual human step.
+
+13. **Singleton Workers Per Role**:
+    - Start a new TUI session and describe a project that needs backend, frontend, QA, DevOps, and PM work.
+    - Let the Architect autospawn its usual team, then use `/spawn` or additional planning instructions to try to create more `backend_dev`, `frontend_dev`, or `qa_engineer` workers.
+    - Confirm in the AGENTS panel that there is at most one Codey, Pixel, Bugsy, Deployo, Checky, and Docy at any time (no `Codey McBackend 2`, `3`, etc.).
+    - Verify that repeated `spawn_worker` calls for these roles simply reuse the existing agent instances.
+
 ---
 
 ## Contact

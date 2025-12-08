@@ -1,0 +1,20 @@
+/* basic styles for the demo UI */
+:root {
+  --bg: #0b1021;
+  --card: #1e1b35;
+  --text: #e9eaf7;
+}
+html, body, #root {
+  height: 100%;
+}
+body {
+  margin: 0; font-family: Inter, system-ui, sans-serif; background: linear-gradient(135deg, #0b1021, #11133a);
+  color: var(--text);
+}
+.app { padding: 40px; display: flex; justify-content: center; }
+.card { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; padding: 24px; width: min(860px, 90%); }
+input { padding: 8px 12px; border-radius: 6px; border: 1px solid #334; background: rgba(255,255,255,0.08); color: #fff; }
+button { padding: 8px 12px; border-radius: 6px; border: 1px solid #334; background: #2b6ce6; color: white; cursor: pointer; }
+button[disabled] { opacity: 0.5; cursor: not-allowed; }
+ul { list-style: none; padding: 0; margin: 0; }
+li { padding: 6px 0; }

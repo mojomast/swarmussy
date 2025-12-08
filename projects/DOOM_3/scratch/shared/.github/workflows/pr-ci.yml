@@ -1,0 +1,26 @@
+name: PR CI - Repository-Backed API
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest
+          if [ -f scratch/shared/tests/requirements.txt ]; then pip install -r scratch/shared/tests/requirements.txt; fi
+      - name: Run unit tests
+        run: |
+          pytest -q scratch/shared/tests
+      - name: Lint (optional)
+        run: echo "No linter configured"

@@ -1,0 +1,10 @@
+{
+  "templates": [
+    {
+      "name": "Dockerfile.template",
+      "path": "templates/Dockerfile.template",
+      "description": "Multi-stage Rust workspace builder for cross-target builds",
+      "registered_by": "Deployo McOps"
+    }
+  ]
+}

@@ -1,0 +1,1 @@
+CI workflow added in scratch/shared/.github/workflows/levels-ci.yml and Dockerfile uses shared Dockerfile. Also added vite.config.ts and sample main.ts for build.

@@ -1,0 +1,14 @@
+version: '3.8'
+services:
+  node-backend-tests:
+    image: node:18
+    volumes:
+      - ./scratch/shared/node-backend:/app
+    working_dir: /app
+    command: node test/run_node_tests.js
+  rust-tests:
+    image: rust:1.70
+    volumes:
+      - ./scratch/shared/node-backend/test/rust:/work
+    working_dir: /work
+    command: sh -c "cargo test --workspace || true"

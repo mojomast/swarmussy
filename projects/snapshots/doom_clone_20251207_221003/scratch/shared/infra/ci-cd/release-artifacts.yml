@@ -1,0 +1,45 @@
+name: Release Rust Workspace Artifacts
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+
+jobs:
+  release-artifacts:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@v1
+        with:
+          tag_name: ci-release-${{ github.run_id }}
+          release_name: CI Release ${{ github.run_id }}
+          body: "Automated CI release of Rust workspace artifacts."
+          draft: false
+          prerelease: false
+
+      - name: Upload Release Artifacts
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          RELEASE_ID="${{ steps.create_release.outputs.id }}"
+          ARTIFACTS_DIR="artifacts"
+          if [ ! -d "$ARTIFACTS_DIR" ]; then
+            echo "No artifacts directory found at $ARTIFACTS_DIR"
+            exit 0
+          fi
+          shopt -s nullglob
+          for f in "$ARTIFACTS_DIR"/*/*.tar.gz; do
+            if [ -f "$f" ]; then
+              NAME=$(basename "$f")
+              echo "Uploading $NAME"
+              curl -sS -H "Authorization: token $GITHUB_TOKEN" \
+                   -H "Content-Type: application/gzip" \
+                   --data-binary @"$f" \
+                   "https://uploads.github.com/repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}/assets?name=$NAME" >/dev/null || true
+            fi
+          done

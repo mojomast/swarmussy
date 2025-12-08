@@ -1,0 +1,10 @@
+{
+  "id": "sample_asset_01",
+  "name": "sample_asset_01",
+  "type": "texture",
+  "metadata": {
+    "description": "Sample asset fixture for CI tests",
+    "version": 1,
+    "author": "QA Harness"
+  }
+}

@@ -131,9 +131,14 @@ def ensure_data_directory():
 def validate_config():
     """Validate required configuration is present."""
     errors = []
-    
-    if not REQUESTY_API_KEY:
-        errors.append("REQUESTY_API_KEY is not set. Please set it in your .env file.")
+    from core.settings_manager import get_settings
+    settings = get_settings()
+
+    custom_base = (settings.get("api_base_url", "") or "").strip()
+    custom_key = (settings.get("api_key", "") or "").strip()
+
+    if not REQUESTY_API_KEY and not (custom_base and custom_key):
+        errors.append("No API key configured. Set REQUESTY_API_KEY in .env or configure a custom provider via /api.")
     
     if errors:
         return False, errors

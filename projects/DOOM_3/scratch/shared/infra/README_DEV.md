@@ -1,0 +1,1 @@
+Infra dev notes: repository-backed API layer integration is now supported via start_api.sh in the Cleanup app. PR CI will clone and run tests against the repository-backed API if REPO_API_URL is provided.

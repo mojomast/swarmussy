@@ -1,0 +1,1 @@
+Frontend scaffold with React, TypeScript, Vite. Routes: /, /editor, /viewer. Contains skeleton for level editor, HUD, inventory, and canvas viewer. Integrates with backend via fetch endpoints (wired in scratch/shared/src/api.ts).

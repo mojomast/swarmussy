@@ -1,0 +1,15 @@
+version: '3.8'
+services:
+  level-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.level_api
+    ports:
+      - "3000:3000"
+    environment:
+      - API_BASE_URL=${API_BASE_URL}
+  ui:
+    image: node:20-alpine
+    ports:
+      - "8080:8080"
+    command: ["sleep", "infinity"]

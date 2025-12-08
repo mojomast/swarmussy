@@ -1,0 +1,9 @@
+[workspace]
+members = [
+  "core",
+  "desktop",
+  "engine",
+  "editor",
+  "shared_models",
+  "tests",
+]

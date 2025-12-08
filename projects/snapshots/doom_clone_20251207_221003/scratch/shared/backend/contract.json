@@ -1,0 +1,45 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Users API Contract",
+  "type": "object",
+  "properties": {
+    "basePath": {"type": "string"},
+    "endpoints": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "path": {"type": "string"},
+          "method": {"type": "string"},
+          "summary": {"type": "string"},
+          "body": {"type": ["object", "null"]},
+          "response": {"type": ["string", "object", "null"]}
+        },
+        "required": ["path", "method"]
+      }
+    },
+    "schemas": {
+      "type": "object",
+      "properties": {
+        "UserProfile": {
+          "type": "object",
+          "properties": {
+            "id": {"type": "string"},
+            "name": {"type": "string"},
+            "avatar": {"type": ["string", "null"]},
+            "level": {"type": ["number", "null"]},
+            "health": {"type": ["number", "null"]},
+            "score": {"type": ["number", "null"]},
+            "inventory": {
+              "type": ["array", "null"],
+              "items": {"type": "string"}
+            },
+            "lastSaved": {"type": ["string", "null"]}
+          },
+          "required": ["id", "name"]
+        }
+      }
+    }
+  },
+  "additionalProperties": false
+}

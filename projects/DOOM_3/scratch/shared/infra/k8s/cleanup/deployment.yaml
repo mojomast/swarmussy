@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cleanup-deployment
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: cleanup
+  template:
+    metadata:
+      labels:
+        app: cleanup
+    spec:
+      containers:
+      - name: cleanup
+        image: ghcr.io/your-org/cleanup:latest
+        ports:
+        - containerPort: 8000
+        env:
+        - name: DB_HOST
+          value: 'db'
+        - name: DB_PORT
+          value: '5432'
+        - name: REPO_API_URL
+          value: ''
+        - name: REPO_API_BRANCH
+          value: 'main'
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cleanup-service
+spec:
+  selector:
+    app: cleanup
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: 8000
+    nodePort: 30080
+  type: NodePort

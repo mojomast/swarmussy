@@ -1,0 +1,26 @@
+version: '3.8'
+services:
+  auth-mock:
+    build:
+      context: ./auth-mock
+    container_name: auth-mock
+    ports:
+      - "8080:8080"
+    networks:
+      - tests
+  node-backend-test:
+    build:
+      context: ./node-backend/test
+    container_name: node-backend-test
+    environment:
+      - AUTH_TOKEN=supersecrettoken
+      - AUTH_MOCK_ENABLED=true
+    depends_on:
+      - auth-mock
+    networks:
+      - tests
+    volumes:
+      - ./artifacts:/artifacts
+networks:
+  tests:
+    driver: bridge
