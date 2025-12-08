@@ -1130,6 +1130,7 @@ class SwarmDashboard(App):
         self.is_processing = False
         # Set when a synthetic Auto Orchestrator message is injected to nudge Bossy/Checky
         self.auto_orchestrator_pending: bool = False
+        self.auto_orchestrator_retries: int = 0  # Retry counter to prevent infinite loops
 
     def update_status_line(self):
         status_map = {
@@ -1471,6 +1472,7 @@ class SwarmDashboard(App):
             and message.sender_id == "auto_orchestrator"
         ):
             self.auto_orchestrator_pending = True
+            self.auto_orchestrator_retries = 0  # Reset retry counter for new trigger
 
         timestamp = message.timestamp.strftime("%H:%M")
         icon = AGENT_ICONS.get(message.sender_name, "🤖")
@@ -1511,6 +1513,9 @@ class SwarmDashboard(App):
         This lets Checky McManager update status/devplan and Bossy McArchitect
         hand out fresh tasks once workers finish, without manual user prompts.
         """
+        import logging
+        logger = logging.getLogger(__name__)
+        
         from core.settings_manager import get_settings
         settings = get_settings()
 
@@ -1530,22 +1535,91 @@ class SwarmDashboard(App):
             tasks = []
 
         has_open = any(t.status.value in ("pending", "in_progress") for t in tasks)
+        has_working_agents = any(
+            a.status.value == "working" 
+            for a in self.chatroom._agents.values()
+        )
+        has_completed_tasks = any(t.status.value == "completed" for t in tasks)
 
-        # Run when there is active work, or when an auto-orchestrator prompt
-        # is waiting to be handled and we have at least one task recorded.
-        if not has_open and not (self.auto_orchestrator_pending and tasks):
+        # Run when there is active work
+        should_run = has_open or has_working_agents
+        
+        # Also run when auto-orchestrator prompt is pending
+        if self.auto_orchestrator_pending and tasks:
+            should_run = True
+            logger.info(f"[auto_chat_tick] Auto-orchestrator pending, triggering round (retry {self.auto_orchestrator_retries})")
+        
+        # FALLBACK: If all tasks completed but swarm is idle, manually trigger
+        # This handles cases where the Auto Orchestrator message wasn't received
+        if not should_run and has_completed_tasks and not has_open and not has_working_agents:
+            # Check if we recently completed work and haven't triggered yet
+            if not hasattr(self, '_idle_ticks_after_complete'):
+                self._idle_ticks_after_complete = 0
+            
+            self._idle_ticks_after_complete += 1
+            
+            # After 3 idle ticks (~3 seconds), manually inject a nudge
+            if self._idle_ticks_after_complete >= 3 and self._idle_ticks_after_complete <= 5:
+                logger.info("[auto_chat_tick] Fallback: All tasks done but idle, nudging Architect")
+                self.auto_orchestrator_pending = True
+                self.auto_orchestrator_retries = 0
+                should_run = True
+                
+                # Manually inject the Auto Orchestrator message if not already present
+                self._inject_auto_orchestrator_message()
+            elif self._idle_ticks_after_complete > 5:
+                # Reset after giving up to prevent spam
+                self._idle_ticks_after_complete = 0
+        else:
+            # Reset counter when there's activity
+            self._idle_ticks_after_complete = 0
+
+        if not should_run:
             return
 
         # Kick off another conversation round; @work(exclusive=True) prevents
         # overlapping runs.
         self.is_processing = True
 
-        # If we are advancing purely because of an auto-orchestrator hint,
-        # consume that flag here so it doesn't keep firing forever.
-        if not has_open and self.auto_orchestrator_pending:
-            self.auto_orchestrator_pending = False
+        # Note: auto_orchestrator_pending is cleared in run_conversation after
+        # the round completes successfully, not here (prevents losing the flag
+        # if something goes wrong)
 
         self.run_conversation()
+    
+    def _inject_auto_orchestrator_message(self):
+        """Manually inject an Auto Orchestrator message to nudge the Architect."""
+        import asyncio
+        from core.models import Message, MessageRole, MessageType
+        
+        async def _inject():
+            from core.task_manager import get_task_manager
+            tm = get_task_manager()
+            completed = len([t for t in tm.get_all_tasks() if t.status.value == "completed"])
+            
+            auto_msg = Message(
+                content=(
+                    f"Phase milestone: {completed} task(s) completed. "
+                    "Bossy McArchitect: Check the master plan and assign next batch of tasks. "
+                    "If all work is done, summarize deliverables for the human."
+                ),
+                sender_name="Auto Orchestrator",
+                sender_id="auto_orchestrator",
+                role=MessageRole.HUMAN,
+                message_type=MessageType.CHAT
+            )
+            await self.chatroom._broadcast_message(auto_msg)
+            
+            # Also add to Architect's memory directly
+            for agent in self.chatroom._agents.values():
+                await agent.process_incoming_message(auto_msg)
+        
+        # Run in the event loop
+        try:
+            asyncio.create_task(_inject())
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"Failed to inject auto-orchestrator message: {e}")
 
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -1570,8 +1644,33 @@ class SwarmDashboard(App):
 
     @work(exclusive=True)
     async def run_conversation(self):
+        import logging
+        logger = logging.getLogger(__name__)
+        
         try:
-            await self.chatroom.run_conversation_round()
+            messages = await self.chatroom.run_conversation_round()
+            
+            logger.info(f"[run_conversation] Round complete: {len(messages)} messages, auto_pending={self.auto_orchestrator_pending}")
+            
+            # If the round produced messages and auto_orchestrator was pending,
+            # clear the flag since we successfully processed it
+            if self.auto_orchestrator_pending:
+                if messages:
+                    # Architect (or someone) responded - success!
+                    logger.info("[run_conversation] Auto-orchestrator handled successfully")
+                    self.auto_orchestrator_pending = False
+                    self.auto_orchestrator_retries = 0
+                else:
+                    # No response this round, increment retry counter
+                    self.auto_orchestrator_retries += 1
+                    logger.warning(f"[run_conversation] No response to auto-orchestrator, retry {self.auto_orchestrator_retries}")
+                    if self.auto_orchestrator_retries >= 5:
+                        # Give up after 5 retries to prevent infinite loops
+                        logger.error("[run_conversation] Giving up on auto-orchestrator after 5 retries")
+                        self.auto_orchestrator_pending = False
+                        self.auto_orchestrator_retries = 0
+        except Exception as e:
+            logger.error(f"[run_conversation] Error: {e}")
         finally:
             self.is_processing = False
             self.refresh_panels()
@@ -1998,6 +2097,14 @@ def main():
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         handlers=[logging.FileHandler(log_dir / f"tui_{timestamp}.log", encoding="utf-8")],
     )
+    
+    # Silence verbose third-party libraries that spam DEBUG logs
+    logging.getLogger("aiosqlite").setLevel(logging.WARNING)
+    logging.getLogger("websockets").setLevel(logging.WARNING)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("openai").setLevel(logging.WARNING)
+    logging.getLogger("urllib3").setLevel(logging.WARNING)
 
     is_valid, errors = validate_config()
     if not is_valid:

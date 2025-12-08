@@ -143,12 +143,12 @@ class BaseAgent(ABC):
             # Find the last message we should respond to (human or auto-orchestrator)
             last_trigger_msg_id = None
             for msg in reversed(self._short_term_memory):
+                # Respond to human messages (including Auto Orchestrator which uses HUMAN role)
                 if msg.role == MessageRole.HUMAN:
                     last_trigger_msg_id = msg.id
-                    break
-                # Also respond to auto-orchestrator messages (phase completion triggers)
-                if msg.role == MessageRole.SYSTEM and "Auto Orchestrator" in getattr(msg, 'sender_name', ''):
-                    last_trigger_msg_id = msg.id
+                    # Log for debugging auto-orchestrator triggers
+                    if getattr(msg, 'sender_id', '') == 'auto_orchestrator':
+                        logger.info(f"[{self.name}] Found Auto Orchestrator trigger: {msg.id}")
                     break
             
             # If no trigger messages, only respond on first join
@@ -158,9 +158,11 @@ class BaseAgent(ABC):
             # Check if we already responded after this trigger message
             if hasattr(self, '_last_responded_to_human_id'):
                 if self._last_responded_to_human_id == last_trigger_msg_id:
+                    logger.debug(f"[{self.name}] Already responded to {last_trigger_msg_id[:8]}")
                     return False  # Already responded, wait for new input
             
             # New trigger message, we should respond
+            logger.info(f"[{self.name}] Will respond to new trigger: {last_trigger_msg_id[:8]}")
             return True
         
         # Project Manager: delegate to its own should_respond() if it has one
@@ -891,6 +893,8 @@ Keep chat responses concise and focused on the task. Use the tools for the heavy
             logger.info(f"Agent {self.name} completed task {completed_task_id} and is now IDLE")
 
             # Check if this was the last open task and trigger auto-resume
+            # Note: chatroom.run_conversation_round also checks this at the end of each round
+            # This is a redundant check for robustness
             try:
                 all_tasks = task_manager.get_all_tasks()
                 open_tasks = [t for t in all_tasks if t.status in (TaskStatus.PENDING, TaskStatus.IN_PROGRESS)]
@@ -899,29 +903,10 @@ Keep chat responses concise and focused on the task. Use the tools for the heavy
                 if not open_tasks and completed_tasks:
                     from core.chatroom import get_chatroom
                     chatroom = await get_chatroom()
-                    
-                    # Create a proper human-role message that the Architect will respond to
-                    auto_msg = Message(
-                        content=(
-                            f"Phase milestone reached: {len(completed_tasks)} task(s) completed, 0 remaining. "
-                            "Bossy McArchitect: Review the devplan, check what work remains in the master plan, "
-                            "and assign the next batch of tasks to keep development moving. "
-                            "If all planned work is done, summarize the deliverables for the human."
-                        ),
-                        sender_name="Auto Orchestrator",
-                        sender_id="auto_orchestrator",
-                        role=MessageRole.HUMAN,  # Use HUMAN role so Architect responds
-                        message_type=MessageType.CHAT
-                    )
-                    await chatroom._broadcast_message(auto_msg)
-                    
-                    # Notify all agents about this message
-                    for agent in list(chatroom._agents.values()):
-                        await agent.process_incoming_message(auto_msg)
-                    
-                    logger.info("Auto-orchestrator triggered: all tasks complete, nudging Architect")
+                    # Use centralized method with cooldown to prevent spam
+                    await chatroom._send_auto_orchestrator_message(len(completed_tasks))
             except Exception as e:
-                logger.warning(f"[{self.name}] Failed to enqueue auto-orchestration message: {e}")
+                logger.warning(f"[{self.name}] Failed to trigger auto-orchestration: {e}")
         
         return msg
     

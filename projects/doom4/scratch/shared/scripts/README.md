@@ -1,0 +1,1 @@
+# Scripts used by frontend-backend binding task

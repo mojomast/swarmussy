@@ -233,6 +233,15 @@ class AgentToolExecutor:
             "append_decision_log": self._append_decision_log,
             "append_team_log": self._append_team_log,
             "complete_my_task": self._complete_my_task,
+            "read_multiple_files": self._read_multiple_files,
+            "report_blocker": self._report_blocker,
+            "request_help": self._request_help,
+            "get_task_context": self._get_task_context,
+            "list_agents": self._list_agents,
+            "create_checkpoint": self._create_checkpoint,
+            "get_context_summary": self._get_context_summary,
+            "delegate_subtask": self._delegate_subtask,
+            "get_recent_changes": self._get_recent_changes,
         }
         
         if tool_name not in tool_map:
@@ -504,9 +513,11 @@ class AgentToolExecutor:
             return {"success": False, "error": f"Failed to create folder: {e}"}
     
     async def _search_code(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Search for text in files."""
+        """Search for text in files with regex support and better performance."""
         query = args.get("query", "")
         path = args.get("path", ".")
+        use_regex = args.get("regex", False)
+        file_pattern = args.get("file_pattern", "*")  # e.g., "*.py", "*.js"
         
         if not query:
             return {"success": False, "error": "query is required"}
@@ -515,31 +526,66 @@ class AgentToolExecutor:
         if not valid:
             return {"success": False, "error": error}
         
+        # Compile regex pattern if needed
+        pattern = None
+        if use_regex:
+            try:
+                pattern = re.compile(query, re.IGNORECASE)
+            except re.error as e:
+                return {"success": False, "error": f"Invalid regex: {e}"}
+        
         try:
             results = []
             search_dir = resolved if resolved.is_dir() else resolved.parent
             
-            for file_path in search_dir.rglob("*"):
-                if file_path.is_file():
-                    try:
-                        async with aiofiles.open(file_path, 'r', encoding='utf-8') as f:
-                            content = await f.read()
+            # Use file pattern for more targeted search
+            glob_pattern = f"**/{file_pattern}" if file_pattern != "*" else "**/*"
+            
+            # Collect files first, then search in parallel-ish manner
+            files_to_search = [
+                fp for fp in search_dir.glob(glob_pattern)
+                if fp.is_file() and fp.suffix in {
+                    '.py', '.js', '.ts', '.tsx', '.jsx', '.json', '.md', '.txt',
+                    '.html', '.css', '.scss', '.yaml', '.yml', '.toml', '.cfg',
+                    '.sh', '.bash', '.go', '.rs', '.c', '.cpp', '.h', '.hpp',
+                    '.java', '.kt', '.swift', '.rb', '.php', '.sql', '.xml', ''
+                }
+            ]
+            
+            for file_path in files_to_search[:100]:  # Limit files to prevent timeout
+                try:
+                    async with aiofiles.open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                        content = await f.read()
+                    
+                    for i, line in enumerate(content.split('\n'), 1):
+                        match_found = False
+                        if pattern:
+                            match_found = pattern.search(line) is not None
+                        else:
+                            match_found = query.lower() in line.lower()
                         
-                        for i, line in enumerate(content.split('\n'), 1):
-                            if query.lower() in line.lower():
-                                results.append({
-                                    "file": str(file_path.relative_to(self.scratch_dir)),
-                                    "line": i,
-                                    "content": line.strip()[:200]
-                                })
-                    except:
-                        pass  # Skip binary/unreadable files
+                        if match_found:
+                            results.append({
+                                "file": str(file_path.relative_to(self.scratch_dir)),
+                                "line": i,
+                                "content": line.strip()[:200]
+                            })
+                            
+                        if len(results) >= 50:  # Early exit
+                            break
+                    
+                    if len(results) >= 50:
+                        break
+                except:
+                    pass  # Skip binary/unreadable files
             
             return {
                 "success": True,
                 "result": {
                     "query": query,
-                    "matches": results[:50]  # Limit results
+                    "regex": use_regex,
+                    "files_searched": min(len(files_to_search), 100),
+                    "matches": results[:50]
                 }
             }
         except Exception as e:
@@ -552,12 +598,26 @@ class AgentToolExecutor:
         if not command:
             return {"success": False, "error": "command is required"}
         
-        # Allowed commands (whitelist approach)
+        # Allowed commands (whitelist approach) - expanded for better dev experience
         allowed_prefixes = [
-            "python", "pip", "node", "npm", "npx",
-            "git status", "git log", "git diff", "git branch",
-            "ls", "dir", "cat", "type", "echo", "head", "tail",
-            "grep", "find", "wc"
+            # Python ecosystem
+            "python", "pip", "pytest", "mypy", "black", "ruff", "flake8", "isort",
+            # Node ecosystem  
+            "node", "npm", "npx", "yarn", "pnpm", "tsc", "eslint", "prettier",
+            # Git (read-only + safe operations)
+            "git status", "git log", "git diff", "git branch", "git show", "git ls-files",
+            # File inspection
+            "ls", "dir", "cat", "type", "echo", "head", "tail", "more", "less",
+            # Search and analysis
+            "grep", "find", "wc", "sort", "uniq", "awk", "sed",
+            # Build tools
+            "make", "cmake", "cargo", "go build", "go run", "go test",
+            # Docker (inspection only)
+            "docker ps", "docker images", "docker logs",
+            # Testing
+            "jest", "vitest", "mocha",
+            # Misc utilities
+            "pwd", "which", "where", "tree", "file", "stat",
         ]
         
         cmd_lower = command.lower().strip()
@@ -1298,6 +1358,220 @@ class AgentToolExecutor:
             },
         }
 
+    async def _read_multiple_files(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Read multiple files in a single tool call for efficiency.
+        
+        This reduces API round-trips when an agent needs to understand
+        multiple files before making changes.
+        """
+        paths = args.get("paths", [])
+        if not paths:
+            return {"success": False, "error": "paths is required (list of file paths)"}
+        
+        if len(paths) > 10:
+            return {"success": False, "error": "Maximum 10 files per batch read"}
+        
+        results = {}
+        errors = []
+        
+        for path in paths:
+            result = await self._read_file({"path": path})
+            if result.get("success"):
+                file_info = result["result"]
+                results[path] = {
+                    "content": file_info.get("content", ""),
+                    "line_count": file_info.get("line_count", 0),
+                }
+            else:
+                errors.append(f"{path}: {result.get('error', 'unknown error')}")
+        
+        return {
+            "success": len(results) > 0,
+            "result": {
+                "files": results,
+                "files_read": len(results),
+                "errors": errors if errors else None,
+            }
+        }
+
+    async def _report_blocker(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Report that you are blocked and need help.
+        
+        This notifies the Architect and PM that work is stalled,
+        and logs the blocker for tracking.
+        """
+        description = (args.get("description") or "").strip()
+        blocker_type = args.get("type", "technical")  # technical, dependency, clarification
+        
+        if not description:
+            return {"success": False, "error": "description is required"}
+        
+        from core.chatroom import get_chatroom
+        
+        chatroom = await get_chatroom()
+        agent = chatroom._agents.get(self.agent_id)
+        task_desc = getattr(agent, "current_task_description", "") if agent else ""
+        
+        # Log to blockers.md
+        path = "shared/blockers.md"
+        timestamp = datetime.now().isoformat(timespec="seconds")
+        
+        entry_lines = [
+            f"## ⚠️ Blocker: {self.agent_name} ({timestamp})",
+            f"- **Type**: {blocker_type}",
+            f"- **Task**: {task_desc[:100] if task_desc else 'N/A'}",
+            f"- **Description**: {description}",
+            "",
+        ]
+        entry = "\n".join(entry_lines) + "\n"
+        
+        # Ensure blockers.md exists
+        try:
+            valid, resolved, error = self._validate_path(path)
+            if valid and not resolved.exists():
+                header = "# Active Blockers\n\nBlockers reported by agents that need resolution.\n\n"
+                await self._write_file({"path": path, "content": header})
+        except Exception:
+            pass
+        
+        await self._append_file({"path": path, "content": entry})
+        
+        # Also broadcast to alert the team
+        try:
+            blocker_msg = Message(
+                content=f"🚧 BLOCKER from {self.agent_name}: {description[:200]}",
+                sender_name=self.agent_name,
+                sender_id=self.agent_id,
+                role=MessageRole.SYSTEM,
+                message_type=MessageType.STATUS
+            )
+            await chatroom._broadcast_message(blocker_msg)
+        except Exception:
+            pass
+        
+        return {
+            "success": True,
+            "result": {
+                "message": "Blocker reported. Architect and PM have been notified.",
+                "logged_to": path,
+            }
+        }
+
+    async def _request_help(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Request help from another specialist agent.
+        
+        Use this when you need expertise from another team member
+        (e.g., backend needs frontend input on API contract).
+        """
+        target_role = (args.get("target_role") or "").strip()
+        question = (args.get("question") or "").strip()
+        context = (args.get("context") or "").strip()
+        
+        if not target_role:
+            return {"success": False, "error": "target_role is required (e.g., 'frontend_dev', 'qa_engineer')"}
+        if not question:
+            return {"success": False, "error": "question is required"}
+        
+        from core.chatroom import get_chatroom
+        
+        chatroom = await get_chatroom()
+        
+        # Log to team_log.md for visibility
+        timestamp = datetime.now().isoformat(timespec="seconds")
+        log_entry = f"## {timestamp} — Help Request\n"
+        log_entry += f"- From: {self.agent_name}\n"
+        log_entry += f"- To: {target_role}\n"
+        log_entry += f"- Question: {question}\n"
+        if context:
+            log_entry += f"- Context: {context}\n"
+        log_entry += "\n"
+        
+        await self._append_team_log({
+            "summary": f"Help request from {self.agent_name} to {target_role}",
+            "category": "collaboration",
+            "details": f"Question: {question}"
+        })
+        
+        # Broadcast the request
+        try:
+            help_msg = Message(
+                content=f"💬 {self.agent_name} needs help from {target_role}: {question[:150]}",
+                sender_name=self.agent_name,
+                sender_id=self.agent_id,
+                role=MessageRole.SYSTEM,
+                message_type=MessageType.STATUS
+            )
+            await chatroom._broadcast_message(help_msg)
+        except Exception:
+            pass
+        
+        return {
+            "success": True,
+            "result": {
+                "message": f"Help request sent to {target_role}. Check team_log.md for response.",
+            }
+        }
+
+    async def _get_task_context(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Get comprehensive context about your current task and related work.
+        
+        Returns your task details, related files, and what other agents
+        are working on to help you understand dependencies.
+        """
+        from core.chatroom import get_chatroom
+        from core.task_manager import get_task_manager
+        
+        chatroom = await get_chatroom()
+        tm = get_task_manager()
+        
+        agent = chatroom._agents.get(self.agent_id)
+        if not agent:
+            return {"success": False, "error": "Agent not found"}
+        
+        task_id = getattr(agent, "current_task_id", None)
+        task_desc = getattr(agent, "current_task_description", "")
+        
+        # Get all tasks for context
+        all_tasks = tm.get_all_tasks()
+        
+        # Find related tasks (same keywords or dependencies)
+        my_task = None
+        related_tasks = []
+        in_progress_tasks = []
+        
+        for t in all_tasks:
+            if t.id == task_id:
+                my_task = t
+            elif t.status.value == "in_progress":
+                in_progress_tasks.append({
+                    "id": t.id[:8],
+                    "description": t.description[:80],
+                    "assigned_to": t.assigned_to,
+                })
+        
+        # Get project structure for reference
+        structure_result = await self._get_project_structure({"path": "shared", "max_depth": 3})
+        project_files = structure_result.get("result", "No files yet")
+        
+        return {
+            "success": True,
+            "result": {
+                "your_task": {
+                    "id": task_id,
+                    "description": task_desc,
+                    "status": my_task.status.value if my_task else "unknown",
+                },
+                "project_structure": project_files,
+                "other_active_work": in_progress_tasks,
+                "tips": [
+                    "Read master_plan.md for full project context",
+                    "Use read_multiple_files to batch-read related files",
+                    "Call complete_my_task when done with your assignment",
+                    "Use report_blocker if you're stuck",
+                ]
+            }
+        }
+
     async def _append_file(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Append content to an existing file."""
         path = args.get("path", "")
@@ -1334,6 +1608,262 @@ class AgentToolExecutor:
             }
         except Exception as e:
             return {"success": False, "error": f"Failed to append to file: {e}"}
+
+    async def _list_agents(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """List all agents in the swarm with their current status.
+        
+        Useful for understanding who's available and what they're working on.
+        """
+        from core.chatroom import get_chatroom
+        
+        chatroom = await get_chatroom()
+        agents_info = []
+        
+        for agent_id, agent in chatroom._agents.items():
+            task_desc = getattr(agent, "current_task_description", "")
+            agents_info.append({
+                "name": agent.name,
+                "role": getattr(agent, "role", "unknown"),
+                "status": agent.status.value if hasattr(agent, "status") else "unknown",
+                "current_task": task_desc[:80] if task_desc else None,
+                "persona": getattr(agent, "persona_description", "")[:60],
+            })
+        
+        # Sort: working first, then idle
+        agents_info.sort(key=lambda x: (x["status"] != "working", x["name"]))
+        
+        return {
+            "success": True,
+            "result": {
+                "agent_count": len(agents_info),
+                "agents": agents_info,
+            }
+        }
+
+    async def _create_checkpoint(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Create a checkpoint to save important context for continuity.
+        
+        Use this to save progress, decisions, or context that should persist
+        across conversation turns or agent handoffs.
+        """
+        title = (args.get("title") or "").strip()
+        content = (args.get("content") or "").strip()
+        category = args.get("category", "general")  # progress, decision, context, blocker
+        
+        if not title:
+            return {"success": False, "error": "title is required"}
+        if not content:
+            return {"success": False, "error": "content is required"}
+        
+        timestamp = datetime.now().isoformat(timespec="seconds")
+        
+        # Write to checkpoints.md
+        checkpoint_path = "shared/checkpoints.md"
+        
+        entry = f"""
+## [{category.upper()}] {title}
+*{timestamp} by {self.agent_name}*
+
+{content}
+
+---
+"""
+        
+        # Ensure checkpoints.md exists
+        try:
+            valid, resolved, error = self._validate_path(checkpoint_path)
+            if valid and not resolved.exists():
+                header = "# Project Checkpoints\n\nImportant context, decisions, and progress saved by agents.\n\n---\n"
+                await self._write_file({"path": checkpoint_path, "content": header})
+        except Exception:
+            pass
+        
+        await self._append_file({"path": checkpoint_path, "content": entry})
+        
+        return {
+            "success": True,
+            "result": {
+                "message": f"Checkpoint '{title}' saved",
+                "file": checkpoint_path,
+                "category": category,
+            }
+        }
+
+    async def _get_context_summary(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Get a summary of current project context.
+        
+        Returns checkpoints, recent decisions, blockers, and project status
+        to help you understand the current state of work.
+        """
+        from core.task_manager import get_task_manager
+        
+        tm = get_task_manager()
+        all_tasks = tm.get_all_tasks()
+        
+        # Categorize tasks
+        pending = [t for t in all_tasks if t.status.value == "pending"]
+        in_progress = [t for t in all_tasks if t.status.value == "in_progress"]
+        completed = [t for t in all_tasks if t.status.value == "completed"]
+        
+        # Check for key files
+        key_files = {}
+        for path in ["shared/master_plan.md", "shared/checkpoints.md", "shared/blockers.md", "shared/decision_log.md"]:
+            try:
+                valid, resolved, _ = self._validate_path(path)
+                if valid and resolved.exists():
+                    stat = resolved.stat()
+                    key_files[path] = {
+                        "exists": True,
+                        "size_bytes": stat.st_size,
+                        "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="seconds"),
+                    }
+            except Exception:
+                pass
+        
+        # Read last 3 checkpoints if available
+        recent_checkpoints = []
+        try:
+            valid, resolved, _ = self._validate_path("shared/checkpoints.md")
+            if valid and resolved.exists():
+                async with aiofiles.open(resolved, 'r', encoding='utf-8') as f:
+                    content = await f.read()
+                # Extract last 3 checkpoint titles
+                import re
+                titles = re.findall(r"## \[.*?\] (.+)", content)
+                recent_checkpoints = titles[-3:] if titles else []
+        except Exception:
+            pass
+        
+        return {
+            "success": True,
+            "result": {
+                "task_summary": {
+                    "pending": len(pending),
+                    "in_progress": len(in_progress),
+                    "completed": len(completed),
+                },
+                "in_progress_tasks": [
+                    {"id": t.id[:8], "description": t.description[:60], "assigned_to": t.assigned_to}
+                    for t in in_progress[:5]
+                ],
+                "key_files": key_files,
+                "recent_checkpoints": recent_checkpoints,
+                "tips": [
+                    "Read master_plan.md for full project scope",
+                    "Check checkpoints.md for important context",
+                    "Check blockers.md for outstanding issues",
+                ]
+            }
+        }
+
+    async def _delegate_subtask(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Delegate a subtask to another specialist agent.
+        
+        Use this when part of your work requires expertise from another role.
+        The subtask is logged and the target agent is notified.
+        """
+        target_role = (args.get("target_role") or "").strip()
+        subtask = (args.get("subtask") or "").strip()
+        context = (args.get("context") or "").strip()
+        priority = args.get("priority", "normal")  # low, normal, high
+        
+        if not target_role:
+            return {"success": False, "error": "target_role is required"}
+        if not subtask:
+            return {"success": False, "error": "subtask is required"}
+        
+        from core.chatroom import get_chatroom
+        
+        chatroom = await get_chatroom()
+        timestamp = datetime.now().isoformat(timespec="seconds")
+        
+        # Log the delegation
+        log_entry = f"""
+## Subtask Delegation ({timestamp})
+- **From**: {self.agent_name}
+- **To**: {target_role}
+- **Priority**: {priority}
+- **Subtask**: {subtask}
+"""
+        if context:
+            log_entry += f"- **Context**: {context}\n"
+        log_entry += "\n---\n"
+        
+        await self._append_team_log({
+            "summary": f"Subtask delegated from {self.agent_name} to {target_role}",
+            "category": "delegation",
+            "details": subtask[:100]
+        })
+        
+        # Broadcast to notify the target
+        try:
+            delegation_msg = Message(
+                content=f"📋 {self.agent_name} delegated subtask to {target_role}: {subtask[:100]}",
+                sender_name=self.agent_name,
+                sender_id=self.agent_id,
+                role=MessageRole.SYSTEM,
+                message_type=MessageType.STATUS
+            )
+            await chatroom._broadcast_message(delegation_msg)
+        except Exception:
+            pass
+        
+        return {
+            "success": True,
+            "result": {
+                "message": f"Subtask delegated to {target_role}. They will see this in the team log.",
+                "tip": "For urgent work, also use assign_task (Architect only) to formally assign.",
+            }
+        }
+
+    async def _get_recent_changes(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Get a summary of recent file changes in the workspace.
+        
+        Useful for understanding what's been modified recently without
+        running git commands.
+        """
+        path = args.get("path", "shared")
+        hours = args.get("hours", 1)  # Look back this many hours
+        
+        valid, resolved, error = self._validate_path(path)
+        if not valid:
+            return {"success": False, "error": error}
+        
+        if not resolved.is_dir():
+            return {"success": False, "error": f"Path must be a directory: {path}"}
+        
+        cutoff = datetime.now().timestamp() - (hours * 3600)
+        
+        recent_files = []
+        try:
+            for file_path in resolved.rglob("*"):
+                if file_path.is_file():
+                    try:
+                        stat = file_path.stat()
+                        if stat.st_mtime >= cutoff:
+                            recent_files.append({
+                                "path": str(file_path.relative_to(self.scratch_dir)),
+                                "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="seconds"),
+                                "size_bytes": stat.st_size,
+                            })
+                    except Exception:
+                        pass
+            
+            # Sort by most recent first
+            recent_files.sort(key=lambda x: x["modified"], reverse=True)
+            
+        except Exception as e:
+            return {"success": False, "error": f"Failed to scan directory: {e}"}
+        
+        return {
+            "success": True,
+            "result": {
+                "path": path,
+                "hours": hours,
+                "files_changed": len(recent_files),
+                "files": recent_files[:20],  # Limit to 20 most recent
+            }
+        }
 
     async def _scaffold_project(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Create a project scaffold with common structure."""
@@ -1677,17 +2207,25 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "search_code",
-            "description": "Search for text/code patterns in files.",
+            "description": "Search for text/code patterns in files. Supports regex and file type filtering for targeted searches.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "Text to search for"
+                        "description": "Text or regex pattern to search for"
                     },
                     "path": {
                         "type": "string",
                         "description": "Directory to search in (default: workspace)"
+                    },
+                    "regex": {
+                        "type": "boolean",
+                        "description": "If true, treat query as a regex pattern (default: false)"
+                    },
+                    "file_pattern": {
+                        "type": "string",
+                        "description": "Glob pattern for files to search (e.g., '*.py', '*.js'). Default: all code files"
                     }
                 },
                 "required": ["query"]
@@ -1698,7 +2236,7 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "run_command",
-            "description": "Run a shell command. Limited to safe commands like python, pip, node, npm, git status/log/diff, ls, cat, grep.",
+            "description": "Run a shell command. Supports: python/pip/pytest, node/npm/yarn, git (read-only), ls/cat/grep/find, make/cargo/go, jest/vitest, docker (inspect). Commands run in the shared workspace with 30s timeout.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1806,13 +2344,18 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "spawn_worker",
-            "description": "Spawn a new worker agent with a specific role. Use this to scale the swarm.",
+            "description": "Spawn a new worker agent with a specific role. Workers are singletons - calling spawn for an existing role reuses the agent.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "role": {
                         "type": "string",
-                        "description": "The role of the agent (e.g., 'backend_dev', 'frontend_dev', 'qa_engineer')"
+                        "enum": [
+                            "backend_dev", "frontend_dev", "qa_engineer", "devops",
+                            "project_manager", "tech_writer", "database_specialist",
+                            "api_designer", "code_reviewer", "research"
+                        ],
+                        "description": "Role: backend_dev (Codey), frontend_dev (Pixel), qa_engineer (Bugsy), devops (Deployo), project_manager (Checky), tech_writer (Docy), database_specialist (Schema), api_designer (Swagger), code_reviewer (Nitpick), research (Googly)"
                     }
                 },
                 "required": ["role"]
@@ -2032,6 +2575,184 @@ TOOL_DEFINITIONS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_multiple_files",
+            "description": "Read multiple files in a single call. More efficient than calling read_file multiple times. Use this when you need to understand several related files before making changes.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "paths": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "List of file paths to read (max 10 files)"
+                    }
+                },
+                "required": ["paths"]
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "report_blocker",
+            "description": "Report that you are blocked and need help. This notifies the Architect and PM, and logs the blocker for tracking. Use this when you cannot proceed without external input.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "description": {
+                        "type": "string",
+                        "description": "What is blocking you and what help you need"
+                    },
+                    "type": {
+                        "type": "string",
+                        "enum": ["technical", "dependency", "clarification"],
+                        "description": "Type of blocker (default: technical)"
+                    }
+                },
+                "required": ["description"]
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "request_help",
+            "description": "Request help from another specialist agent. Use when you need expertise from a teammate (e.g., backend asking frontend about API contract).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target_role": {
+                        "type": "string",
+                        "description": "Role to ask for help (e.g., 'frontend_dev', 'qa_engineer', 'devops')"
+                    },
+                    "question": {
+                        "type": "string",
+                        "description": "Your specific question"
+                    },
+                    "context": {
+                        "type": "string",
+                        "description": "Optional additional context"
+                    }
+                },
+                "required": ["target_role", "question"]
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_task_context",
+            "description": "Get comprehensive context about your current task. Returns your task details, project structure, what other agents are working on, and helpful tips. Call this at the start of complex tasks.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_agents",
+            "description": "List all agents in the swarm with their current status and what they're working on.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_checkpoint",
+            "description": "Save important context, decisions, or progress to checkpoints.md for continuity across turns and agent handoffs.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": "Short descriptive title for the checkpoint"
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "The context, decision, or progress to save"
+                    },
+                    "category": {
+                        "type": "string",
+                        "enum": ["progress", "decision", "context", "blocker"],
+                        "description": "Category of checkpoint (default: general)"
+                    }
+                },
+                "required": ["title", "content"]
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_context_summary",
+            "description": "Get a summary of current project context: task status, key files, recent checkpoints, and helpful tips.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "delegate_subtask",
+            "description": "Delegate a subtask to another specialist agent. Use when part of your work requires expertise from another role.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target_role": {
+                        "type": "string",
+                        "description": "Role to delegate to (e.g., 'database_specialist', 'api_designer')"
+                    },
+                    "subtask": {
+                        "type": "string",
+                        "description": "Description of the subtask"
+                    },
+                    "context": {
+                        "type": "string",
+                        "description": "Optional context to help them complete the subtask"
+                    },
+                    "priority": {
+                        "type": "string",
+                        "enum": ["low", "normal", "high"],
+                        "description": "Priority level (default: normal)"
+                    }
+                },
+                "required": ["target_role", "subtask"]
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_recent_changes",
+            "description": "Get a summary of recent file changes in the workspace. Useful for understanding what's been modified.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Directory to check (default: 'shared')"
+                    },
+                    "hours": {
+                        "type": "integer",
+                        "description": "Look back this many hours (default: 1)"
+                    }
+                },
+                "required": []
+            },
+        },
+    },
 ]
 
 
@@ -2041,6 +2762,8 @@ ORCHESTRATOR_TOOL_NAMES = {
     "create_task",
     "assign_task",
     "get_swarm_state",
+    "list_agents",  # Added: see team status
+    "get_context_summary",  # Added: project overview
     "read_file",
     "write_file",
     "list_files",
@@ -2071,6 +2794,15 @@ WORKER_TOOL_NAMES = {
     "get_project_structure",
     "scaffold_project",
     "complete_my_task",  # Workers use this to signal task completion
+    "read_multiple_files",  # Batch read for efficiency
+    "report_blocker",  # Signal when stuck
+    "request_help",  # Ask other specialists for help
+    "get_task_context",  # Get full context about current task
+    "list_agents",  # See all agents and their status
+    "create_checkpoint",  # Save important context
+    "get_context_summary",  # Get project context summary
+    "delegate_subtask",  # Delegate work to other specialists
+    "get_recent_changes",  # See recent file modifications
 }
 
 WORKER_TOOLS = [t for t in TOOL_DEFINITIONS if t["function"]["name"] in WORKER_TOOL_NAMES]
@@ -2108,19 +2840,52 @@ def get_tools_system_prompt() -> str:
     """Get the system prompt addition for tool usage."""
     return """
 
-## FILE TOOLS
-You have access to tools for working with files in the SHARED workspace. Use them to:
-- Read, write, and edit code files
-- Search for code patterns
-- Run safe commands (python, pip, node, npm, git status/log, etc.)
+## TOOLS & COLLABORATION
 
-IMPORTANT RULES:
-1. All file paths are relative to the shared workspace (scratch/shared/)
-2. You are working in a SHARED environment. All agents see the same files.
-3. Before editing a file that others might work on, use claim_file to get exclusive access
-4. Release files with release_file when done
-5. Keep responses SHORT when not using tools - tools do the heavy lifting
-6. **NO MOCK CODE**: When writing files, you must provide the FULL implementation. No placeholders.
+### YOUR TEAM - Available Specialists:
+- **backend_dev** (Codey) - API, server logic
+- **frontend_dev** (Pixel) - UI/UX, React
+- **database_specialist** (Schema) - DB schemas, migrations, queries
+- **api_designer** (Swagger) - API design, OpenAPI specs
+- **qa_engineer** (Bugsy) - Testing, security
+- **code_reviewer** (Nitpick) - Code quality, refactoring
+- **devops** (Deployo) - CI/CD, Docker
+- **tech_writer** (Docy) - Documentation
+- **research** (Googly) - Patterns, best practices
 
-Your workspace folder: scratch/shared/
+### WORKFLOW - Use This Order:
+1. `get_task_context()` → See your task, project structure, what others are doing
+2. `read_multiple_files(paths=[...])` → Batch-read related files
+3. Implement with `write_file` / `replace_in_file`
+4. `run_command("pytest ...")` → Test your work
+5. `complete_my_task(result="...")` → **REQUIRED** to finish
+
+### COLLABORATION TOOLS:
+- `list_agents()` → See all agents and what they're working on
+- `delegate_subtask(target_role, subtask)` → Delegate work to another specialist
+- `request_help(target_role, question)` → Ask another specialist for input
+- `report_blocker(description, type)` → Signal you're stuck
+
+### CONTEXT TOOLS:
+- `get_context_summary()` → Project overview: tasks, key files, checkpoints
+- `create_checkpoint(title, content, category)` → Save important context
+- `get_recent_changes(hours=1)` → See recently modified files
+
+### FILE TOOLS:
+- `read_file` / `read_multiple_files` - Read files
+- `write_file` / `replace_in_file` / `edit_file` - Modify files
+- `search_code(query, file_pattern, regex)` - Find code patterns
+- `claim_file` / `release_file` - Lock files during edits
+- `get_project_structure` - See file tree
+- `get_git_status` / `get_git_diff` - See changes
+
+### RULES:
+1. Paths are relative to `scratch/shared/`
+2. SHARED environment - all agents see the same files
+3. Claim files before editing if others might touch them
+4. Keep chat responses SHORT - tools do the heavy lifting
+5. **NO MOCK CODE**: Write FULL implementations. No placeholders.
+6. **ALWAYS call `complete_my_task`** when done
+
+Your workspace: scratch/shared/
 """

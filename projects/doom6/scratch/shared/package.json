@@ -1,0 +1,17 @@
+{
+  "name": "ws-project-scaffold",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "node scratch/shared/scripts/dev.ts",
+    "build": "node scratch/shared/scripts/build.ts",
+    "test": "vitest run"
+  },
+  "type": "module",
+  "devDependencies": {
+    "esbuild": "^0.19.0",
+    "vite": "^5.0.0",
+    "vitest": "^1.22.0",
+    "typescript": "^5.5.0"
+  }
+}

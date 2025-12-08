@@ -1,0 +1,10 @@
+{
+  "name": "doom-api-tests",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "test": "node -v && echo Node OK",
+    "start": "node server.js",
+    "test:api": "node test/api_contract_tests.js"
+  }
+}

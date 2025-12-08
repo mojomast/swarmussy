@@ -1,0 +1,41 @@
+version: '3.8'
+services:
+  db:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: tester
+      POSTGRES_PASSWORD: testpass
+      POSTGRES_DB: appdb
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    networks:
+      - appnet
+
+  api:
+    build:
+      context: ./
+      dockerfile: Dockerfile
+    depends_on:
+      - db
+    environment:
+      DATABASE_URL: postgres://tester:testpass@db:5432/appdb
+      PYTHONUNBUFFERED: '1'
+    ports:
+      - '8000:8000'
+    networks:
+      - appnet
+    restart: unless-stopped
+
+  frontend:
+    image: nginx:latest
+    ports:
+      - '8080:80'
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    networks:
+      - appnet
+
+networks:
+  appnet:
+volumes:
+  db-data:

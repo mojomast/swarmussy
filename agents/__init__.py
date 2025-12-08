@@ -12,6 +12,10 @@ from agents.qa_engineer import QAEngineer
 from agents.devops_engineer import DevOpsEngineer
 from agents.project_manager import ProjectManager
 from agents.tech_writer import TechWriter
+from agents.database_specialist import DatabaseSpecialist
+from agents.api_designer import APIDesigner
+from agents.code_reviewer import CodeReviewer
+from agents.research_agent import ResearchAgent
 
 # All available agent classes
 AGENT_CLASSES = {
@@ -22,6 +26,10 @@ AGENT_CLASSES = {
     "devops": DevOpsEngineer,
     "project_manager": ProjectManager,
     "tech_writer": TechWriter,
+    "database_specialist": DatabaseSpecialist,
+    "api_designer": APIDesigner,
+    "code_reviewer": CodeReviewer,
+    "research": ResearchAgent,
 }
 
 # Display name to role key mapping (lowercase)
@@ -33,6 +41,10 @@ DISPLAY_NAME_TO_ROLE = {
     "deployo mcops": "devops",
     "checky mcmanager": "project_manager",
     "docy mcwriter": "tech_writer",
+    "schema mcdatabase": "database_specialist",
+    "swagger mcendpoint": "api_designer",
+    "nitpick mcreviewer": "code_reviewer",
+    "googly mcresearch": "research",
 }
 
 # Default set of agents for the chatroom
@@ -131,6 +143,10 @@ __all__ = [
     "DevOpsEngineer",
     "ProjectManager",
     "TechWriter",
+    "DatabaseSpecialist",
+    "APIDesigner",
+    "CodeReviewer",
+    "ResearchAgent",
     "AGENT_CLASSES",
     "DISPLAY_NAME_TO_ROLE",
     "DEFAULT_AGENTS",

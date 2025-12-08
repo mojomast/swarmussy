@@ -7,7 +7,7 @@ A multi-agent AI development system where specialized AI agents collaborate to b
 
 ## Features
 
-- **7 Specialized AI Agents** - Each with distinct roles and personalities
+- **11 Specialized AI Agents** - Architect plus 10 specialists (backend, frontend, QA, DevOps, PM, Tech Writer, DB specialist, API designer, code reviewer, research)
 - **True Orchestration** - Architect delegates, workers execute (no micromanagement). Only the Architect speaks directly to you; worker agents report status and results back to the Architect.
 - **Role-Based Tools** - Architect + Project Manager get orchestration tools, workers get coding tools
 - **Live DevPlan + Dashboard Pair**  - `scratch/shared/devplan.md` is the Architect's internal tracker; `scratch/shared/dashboard.md` is an auto-generated, user-facing view of in-progress work, what's next, and blockers
@@ -20,7 +20,8 @@ A multi-agent AI development system where specialized AI agents collaborate to b
 - **Protected DevPlan Ownership** - Only Bossy McArchitect can edit `devplan.md` and `master_plan.md`; workers and Checky request changes which the Architect applies
 - **Team Logs** - Shared `scratch/shared/decisions.md` and `scratch/shared/team_log.md` capture decisions, milestones, and major swarm events
 - **Floating File Browser** - Press `Ctrl+F` (or click `📁 FILES` in the TUI header) to browse the current project's tree and preview files
-- **Context-Aware Auto Orchestrator** - Tracks task state and long contexts, injecting handoff prompts when a worker's prompt for a single call nears ~80k tokens
+- **Context-Aware Auto Orchestrator** - Auto-resumes work when all tasks complete and handles long-context handoffs when a single call nears ~80k tokens
+- **Context & Collaboration Tools** - `get_context_summary`, `list_agents`, `delegate_subtask`, `create_checkpoint`, and `get_recent_changes` keep workers aligned and reduce duplicate effort
 - **Pluggable API Providers** - Use Requesty (default), Z.AI, OpenAI, or a custom endpoint, and optionally spoof the tool identifier (e.g. Claude Code, Cursor, Windsurf) via the Settings → API tab
 - **Git-Aware Local Workflow** - Agents can inspect `git status`/`git diff` for the active project's `scratch/shared` workspace; Checky McManager and Deployo McOps can run a safe, local `git_commit` (no pushes) after review
 - **Skeptical QA Gate for Commits** - Bugsy McTester reviews changes and tests, emitting `QA DECISION: APPROVED` / `REQUEST_CHANGES`; Checky only commits when QA has approved the scope
@@ -37,6 +38,10 @@ A multi-agent AI development system where specialized AI agents collaborate to b
 | **Deployo McOps** | DevOps | CI/CD, Docker, infrastructure |
 | **Checky McManager** | Project Manager | Progress tracking, status reports |
 | **Docy McWriter** | Tech Writer | Documentation, API docs, guides |
+| **Schema McDatabase** | Database Specialist | DB schema design, migrations, queries |
+| **Swagger McEndpoint** | API Designer | API design, OpenAPI specs, contract definition |
+| **Nitpick McReviewer** | Code Reviewer | Code quality, refactoring, best practices |
+| **Googly McResearch** | Researcher | Patterns, best practices, technical research |
 
 ## Quick Start
 
@@ -268,7 +273,7 @@ Use `/dashboard` to see a snapshot anytime.
 
 ## Logging
 
-Logs are saved to `logs/dashboard_YYYYMMDD_HHMMSS.log` with:
+Logs are saved under `logs/` (e.g. `dashboard_YYYYMMDD_HHMMSS.log` for the legacy Rich dashboard and `tui_YYYYMMDD_HHMMSS.log` for the Textual TUI) with:
 - API requests/responses
 - Tool calls and results
 - Agent status changes

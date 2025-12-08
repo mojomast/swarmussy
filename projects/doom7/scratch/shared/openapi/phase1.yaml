@@ -1,0 +1,135 @@
+openapi: 3.0.3
+info:
+  title: Phase 1 API (Consolidated)
+  version: 1.0.0
+  description: Minimal stable Phase 1 OpenAPI for pruned scope. Aligns frontend/backend contracts and removes deprecated endpoints.
+servers:
+  - url: /v1
+paths:
+  /engine/render:
+    get:
+      summary: Retrieve the latest render frame
+      operationId: getRenderFrame
+      responses:
+        '200':
+          description: Frame buffer payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FrameBuffer'
+              example:
+                width: 1280
+                height: 720
+                data: [0, 0, 0, 255, 255, 255, 128, 64]
+        '400':
+          description: Invalid request
+  /editor/level:
+    get:
+      summary: Load the current LevelContract
+      operationId: getLevelContract
+      responses:
+        '200':
+          description: Current level contract
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LevelContract'
+              example:
+                level_id: "level_01"
+                name: "Intro Level"
+                version: "v1.0"
+                content: { "entities": [], "assets": [] }
+    post:
+      summary: Save or update a LevelContract
+      operationId: saveLevelContract
+      requestBody:
+        description: LevelContract payload to save
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LevelContract'
+      responses:
+        '200':
+          description: Save result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  level_id:
+                    type: string
+              example:
+                success: true
+                level_id: "level_01"
+  /events/stream:
+    get:
+      summary: Subscribe to a simple Server-Sent Events stream of Engine/Editor events
+      operationId: streamEvents
+      responses:
+        '200':
+          description: Streaming events using Server-Sent Events
+          content:
+            text/event-stream:
+              schema:
+                type: string
+              example: 'data: {"event_type":"frame_rendered","timestamp":"2025-01-01T12:00:00Z","payload":{"width":1280,"height":720}}'
+components:
+  schemas:
+    FrameBuffer:
+      type: object
+      properties:
+        width:
+          type: integer
+        height:
+          type: integer
+        data:
+          type: array
+          items:
+            type: integer
+            description: Pixel byte (0-255)
+      required:
+        - width
+        - height
+        - data
+      example:
+        width: 1280
+        height: 720
+        data: [0, 0, 0, 255, 255, 255, 128, 64]
+    LevelContract:
+      type: object
+      properties:
+        level_id:
+          type: string
+        name:
+          type: string
+        version:
+          type: string
+        content:
+          type: object
+          description: Arbitrary level content (entities, assets, metadata)
+          additionalProperties: true
+      required:
+        - level_id
+        - name
+        - version
+        - content
+      example:
+        level_id: "level_01"
+        name: "Intro Level"
+        version: "v1.0"
+        content: { "entities": [], "assets": [] }
+    EventContract:
+      type: object
+      properties:
+        event_type:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        payload:
+          type: object
+          description: Arbitrary event payload
+          additionalProperties: true

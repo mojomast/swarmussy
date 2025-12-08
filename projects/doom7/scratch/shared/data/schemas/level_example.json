@@ -1,0 +1,22 @@
+{
+  "schema_version": "1.0.0",
+  "data_version": "1.0.0",
+  "id": "11111111-1111-1111-1111-111111111111",
+  "name": "Demo Level",
+  "size": {"width":3, "height":3},
+  "tiles": [
+    [0,0,0],
+    [0,1,0],
+    [0,0,0]
+  ],
+  "entities": [
+    {
+      "template_id": "goblin",
+      "position": {"x": 1.0, "y": 0.0, "z": 0.0},
+      "rotation": 0.0,
+      "scale": {"x": 1, "y": 1, "z": 1},
+      "properties": {"health": 100},
+      "tags": ["enemy"]
+    }
+  ]
+}

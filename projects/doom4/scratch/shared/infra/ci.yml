@@ -1,0 +1,22 @@
+name: Node CI (scratch/shared)
+version: 1
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+      - name: Install
+        run: cd scratch/shared && npm ci
+      - name: Build
+        run: cd scratch/shared && npm run build
+      - name: Run API Tests
+        run: cd scratch/shared && npm run test:api

@@ -1,0 +1,319 @@
+openapi: 3.0.3
+info:
+  title: Phase 2 API Proposal (Engine & Runtime Surface)
+  version: v2-proposal
+  description: Preliminary proposal for Phase 2 engine controller and runtime data endpoints. Designed to be backward-compatible with Phase 1 contracts where feasible.
+servers:
+  - url: /v2
+paths:
+  /engine/status:
+    get:
+      summary: Get engine runtime status
+      operationId: get_engine_status
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EngineStatus'
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /engine/command:
+    post:
+      summary: Send command to the engine
+      operationId: post_engine_command
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CommandRequest'
+      responses:
+        '200':
+          description: Command accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommandResponse'
+        '400':
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /engine/reset:
+    post:
+      summary: Reset engine state
+      operationId: reset_engine
+      responses:
+        '200':
+          description: Reset result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommandResponse'
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /runtime/worlds:
+    get:
+      summary: List runtime worlds
+      operationId: list_runtime_worlds
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/World'
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    post:
+      summary: Create a runtime world
+      operationId: create_runtime_world
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorldInput'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/World'
+  /runtime/worlds/{world_id}:
+    get:
+      summary: Get a runtime world
+      operationId: get_runtime_world
+      parameters:
+        - in: path
+          name: world_id
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/World'
+        '404':
+          description: Not Found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /runtime/levels:
+    get:
+      summary: List runtime levels
+      operationId: list_runtime_levels
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Level'
+  /runtime/levels/{level_id}:
+    get:
+      summary: Get runtime level
+      operationId: get_runtime_level
+      parameters:
+        - in: path
+          name: level_id
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Level'
+        '404':
+          description: Not Found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /runtime/entities:
+    get:
+      summary: List entities in a runtime world
+      operationId: list_runtime_entities
+      parameters:
+        - in: query
+          name: world_id
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: true
+        '400':
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /events/stream:
+    get:
+      summary: Server-Sent Events streaming endpoint (Phase 2)
+      operationId: stream_events_v2
+      responses:
+        '200':
+          description: Streaming events
+          content:
+            text/event-stream:
+              schema:
+                type: string
+components:
+  schemas:
+    EngineStatus:
+      type: object
+      properties:
+        running:
+          type: boolean
+        mode:
+          type: string
+        tick:
+          type: integer
+        uptime_seconds:
+          type: number
+      required:
+        - running
+        - mode
+    World:
+      type: object
+      properties:
+        world_id:
+          type: string
+        name:
+          type: string
+        seed:
+          type: integer
+        config:
+          type: object
+          additionalProperties: true
+      required:
+        - world_id
+        - name
+    WorldInput:
+      type: object
+      properties:
+        world_id:
+          type: string
+        name:
+          type: string
+        seed:
+          type: integer
+        config:
+          type: object
+          additionalProperties: true
+      required:
+        - world_id
+        - name
+    Level:
+      type: object
+      properties:
+        level_id:
+          type: string
+        world_id:
+          type: string
+        name:
+          type: string
+        version:
+          type: string
+        content:
+          type: object
+          additionalProperties: true
+      required:
+        - level_id
+        - world_id
+        - name
+        - version
+        - content
+    LevelInput:
+      type: object
+      properties:
+        level_id:
+          type: string
+        world_id:
+          type: string
+        name:
+          type: string
+        version:
+          type: string
+        content:
+          type: object
+          additionalProperties: true
+      required:
+        - level_id
+        - world_id
+        - name
+        - version
+        - content
+    CommandRequest:
+      type: object
+      properties:
+        command:
+          type: string
+        args:
+          type: object
+          additionalProperties: true
+      required:
+        - command
+    CommandResponse:
+      type: object
+      properties:
+        accepted:
+          type: boolean
+        message:
+          type: string
+    RenderStats:
+      type: object
+      properties:
+        frames_rendered:
+          type: integer
+        average_fps:
+          type: number
+        memory_mb:
+          type: number
+      example:
+        frames_rendered: 1234
+        average_fps: 59.8
+        memory_mb: 512.5
+    Error:
+      type: object
+      properties:
+        code:
+          type: string
+        message:
+          type: string

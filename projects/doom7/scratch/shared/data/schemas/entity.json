@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/schemas/entity.json",
+  "title": "Entity",
+  "type": "object",
+  "properties": {
+    "schema_version": {"type": "string", "description": "Schema version", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"},
+    "data_version": {"type": "string", "description": "Data version for entity payload", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"},
+    "id": {"type": "string", "format": "uuid"},
+    "template_id": {"type": "string"},
+    "name": {"type": "string"},
+    "entity_type": {"type": "string", "enum": ["monster","weapon","pickup","npc","environment","trigger"]},
+    "position": {
+      "type": "object",
+      "properties": {
+        "x": {"type": "number"},
+        "y": {"type": "number"},
+        "z": {"type": "number"}
+      },
+      "required": ["x","y","z"],
+      "additionalProperties": false
+    },
+    "rotation": {"type": "number"},
+    "scale": {
+      "type": "object",
+      "properties": {
+        "x": {"type": "number"},
+        "y": {"type": "number"},
+        "z": {"type": "number"}
+      },
+      "required": ["x","y","z"],
+      "additionalProperties": false
+    },
+    "properties": {"type": "object"},
+    "tags": {"type": "array", "items": {"type": "string"}},
+    "components": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "type": {"type": "string"},
+          "data": {"type": "object"}
+        },
+        "required": ["type","data"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["schema_version","data_version","id","template_id","name","entity_type","position"],
+  "additionalProperties": false
+}

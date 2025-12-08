@@ -1,0 +1,46 @@
+{
+  "samples": [
+    {
+      "title": "RenderFrameEvent (Editor -> Engine)",
+      "event": {
+        "type": "RenderFrameEvent",
+        "payload": {
+          "deltaMs": 16,
+          "frame": 42
+        }
+      },
+      "description": "Signals a single frame render in the engine loop."
+    },
+    {
+      "title": "ContractUpdatedEvent (Editor -> Engine)",
+      "event": {
+        "type": "ContractUpdatedEvent",
+        "payload": {
+          "contractName": "WorldDescriptor",
+          "version": "1.0"
+        }
+      },
+      "description": "Informs engine to reload/migrate contract bindings."
+    },
+    {
+      "title": "WorldDescriptor (Editor -> Engine)",
+      "event": {
+        "type": "WorldDescriptor",
+        "payload": {
+          "schemaVersion": "1.0",
+          "levelName": "Demo Level",
+          "entities": [
+            {
+              "id": "e1",
+              "name": "Player",
+              "components": [
+                {"type": "Position", "data": {"x": 0, "y": 0, "z": 0}}
+              ]
+            }
+          ]
+        }
+      },
+      "description": "Serialized world descriptor used by editor to define levels."
+    }
+  ]
+}

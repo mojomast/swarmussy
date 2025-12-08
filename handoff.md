@@ -635,3 +635,232 @@ The Textual TUI's right sidebar DevPlan panel now prefers `dashboard.md`, fallin
 
 *Last updated: December 8, 2025 (even later)*
 *Status: DevPlan/dashboard split, explicit task completion, and provider configuration wired into docs and TUI*
+
+---
+
+## Latest Updates (December 8, 2025 - Tool Efficiency & Prompt Improvements)
+
+### 1. New Efficiency Tools
+
+Added four new tools to improve agent efficiency and collaboration:
+
+- **`read_multiple_files(paths=["..."])`**: Batch-read up to 10 files in one tool call. Reduces API round-trips when agents need to understand multiple related files before making changes.
+
+- **`report_blocker(description, type)`**: Workers can signal they're stuck. Logs to `blockers.md` and broadcasts to the team. Types: `technical`, `dependency`, `clarification`.
+
+- **`request_help(target_role, question, context?)`**: Inter-agent collaboration. Workers can ask other specialists for input (e.g., backend asking frontend about API contract). Logs to `team_log.md`.
+
+- **`get_task_context()`**: Returns comprehensive context: current task details, project structure, what other agents are working on, and helpful tips. Workers should call this at task start.
+
+### 2. Enhanced `search_code` Tool
+
+- **Regex support**: `search_code(query="def\\s+\\w+", regex=true)`
+- **File filtering**: `search_code(query="...", file_pattern="*.py")` to search only specific file types
+- **Early exit**: Stops after 50 matches to prevent timeouts
+- **Better file type handling**: Only searches code files (py, js, ts, etc.)
+
+### 3. Expanded `run_command` Whitelist
+
+Now supports:
+- **Python**: pytest, mypy, black, ruff, flake8, isort
+- **Node**: yarn, pnpm, tsc, eslint, prettier, jest, vitest, mocha
+- **Git**: git show, git ls-files (still read-only)
+- **Build tools**: make, cmake, cargo, go build/run/test
+- **Docker**: docker ps/images/logs (inspect only)
+- **Utilities**: pwd, which, where, tree, file, stat, sort, uniq, awk, sed
+
+### 4. Improved Worker Prompts
+
+All worker prompts now include:
+
+**Explicit Workflow**:
+1. `get_task_context()` - Get context first
+2. `read_file("shared/master_plan.md")` - Understand the project
+3. `read_multiple_files([...])` - Batch-read related files
+4. Implement with `write_file` / `replace_in_file`
+5. Test with `run_command`
+6. `complete_my_task(result="...")` - Signal completion
+
+**Tool Usage Best Practices**:
+- Batch reads instead of multiple single reads
+- Search before writing to find existing code
+- Report blockers when stuck
+- Request help from other specialists
+- Claim contested files before editing
+
+### 5. Improved Architect Prompt
+
+**Structured Task Format**:
+```
+assign_task("Codey McBackend", "Implement [FEATURE]:
+
+**Goal**: [One sentence]
+
+**Files to create/modify**:
+- `shared/src/[file].py` - [purpose]
+
+**Requirements**:
+- [Specific function 1]
+- [Specific function 2]
+
+**Dependencies**: Read `shared/[related_file]` first.
+
+**Done when**: Tests pass, exports working module.")
+```
+
+**Task Quality Checklist** - Architect must verify:
+- [ ] Specific file paths
+- [ ] Clear requirements
+- [ ] Dependencies noted
+- [ ] Definition of done
+
+### 6. Enhanced Tools System Prompt
+
+Workers now see efficiency tips in their context:
+- Start with `get_task_context()`
+- Use `read_multiple_files` for batch reads
+- Use `search_code` with filtering
+- Use `report_blocker` when stuck
+- Use `request_help` for collaboration
+- **REQUIRED**: Call `complete_my_task` when done
+
+### Files Changed
+
+| File | Changes |
+|------|---------|
+| `core/agent_tools.py` | Added 4 new tools, improved search_code, expanded run_command whitelist, enhanced tools system prompt |
+| `agents/architect.py` | Structured task format, quality checklist, clearer workflow |
+| `agents/backend_dev.py` | Explicit workflow, tool usage best practices |
+| `agents/frontend_dev.py` | Explicit workflow, tool usage best practices |
+| `agents/qa_engineer.py` | Explicit workflow, tool usage best practices |
+
+### Testing Checklist
+
+- [ ] `get_task_context()` returns task info and project structure
+- [ ] `read_multiple_files` batch-reads files correctly
+- [ ] `report_blocker` logs to blockers.md and broadcasts
+- [ ] `request_help` logs to team_log.md and broadcasts
+- [ ] `search_code` with `regex=true` and `file_pattern` works
+- [ ] Expanded `run_command` allows pytest, jest, etc.
+- [ ] Workers follow the new workflow (context → read → implement → test → complete)
+- [ ] Architect assigns tasks with file paths and done criteria
+
+*Last updated: December 8, 2025 (tool efficiency update)*
+*Status: New efficiency tools, improved search/run_command, enhanced prompts for better swarm flow*
+
+---
+
+## Latest Updates (December 8, 2025 - New Agents & Collaboration Tools)
+
+### 1. Four New Specialist Agents
+
+Added four new agents to expand the team's capabilities:
+
+| Role Key | Name | Specialization |
+|----------|------|----------------|
+| `database_specialist` | Schema McDatabase | DB schema design, migrations, query optimization |
+| `api_designer` | Swagger McEndpoint | API design, OpenAPI specs, contract definition |
+| `code_reviewer` | Nitpick McReviewer | Code quality, refactoring, best practices |
+| `research` | Googly McResearch | Patterns, best practices, technical research |
+
+All agents follow the same workflow pattern and can be spawned by the Architect.
+
+### 2. Five New Context & Collaboration Tools
+
+**Context Management:**
+- **`create_checkpoint(title, content, category)`**: Save important decisions, progress, or context to `checkpoints.md` for continuity.
+- **`get_context_summary()`**: Get project overview: task status, key files, recent checkpoints.
+- **`get_recent_changes(path, hours)`**: See recently modified files without git commands.
+
+**Collaboration:**
+- **`list_agents()`**: See all agents in the swarm with their current status and tasks.
+- **`delegate_subtask(target_role, subtask, context, priority)`**: Delegate work to another specialist. Logs to team_log.md and broadcasts notification.
+
+### 3. Updated Architect Team Table
+
+Architect now knows about all 10 specialist roles:
+```
+| Role | Name | Specialization |
+|------|------|----------------|
+| backend_dev | Codey McBackend | API, Server Logic |
+| frontend_dev | Pixel McFrontend | UI/UX, React |
+| database_specialist | Schema McDatabase | DB Schema, Migrations |
+| api_designer | Swagger McEndpoint | API Design, OpenAPI |
+| qa_engineer | Bugsy McTester | Testing, Security |
+| code_reviewer | Nitpick McReviewer | Code Quality |
+| devops | Deployo McOps | CI/CD, Docker |
+| project_manager | Checky McManager | Progress Tracking |
+| tech_writer | Docy McWriter | Documentation |
+| research | Googly McResearch | Patterns, Best Practices |
+```
+
+### 4. Enhanced Tools System Prompt
+
+Workers now see their full team in the tools system prompt and have access to:
+- Collaboration tools (list_agents, delegate_subtask, request_help)
+- Context tools (get_context_summary, create_checkpoint, get_recent_changes)
+- Clear workflow guidance
+
+### 5. Worker Collaboration Sections
+
+All worker prompts now include a "Collaboration" section showing which specialists to work with:
+- Backend knows to delegate DB work to database_specialist
+- Frontend knows to get API specs from api_designer
+- QA knows code_reviewer handles style, they focus on function/security
+
+### Files Changed
+
+| File | Changes |
+|------|---------|
+| `agents/database_specialist.py` | NEW: Schema McDatabase agent |
+| `agents/api_designer.py` | NEW: Swagger McEndpoint agent |
+| `agents/code_reviewer.py` | NEW: Nitpick McReviewer agent |
+| `agents/research_agent.py` | NEW: Googly McResearch agent |
+| `agents/__init__.py` | Added new agents to exports and role mappings |
+| `agents/architect.py` | Updated team table with all 10 roles |
+| `agents/backend_dev.py` | Added collaboration section |
+| `agents/frontend_dev.py` | Added collaboration section |
+| `agents/qa_engineer.py` | Added collaboration section |
+| `core/agent_tools.py` | Added 5 new tools, updated spawn_worker enum, enhanced tools system prompt |
+
+### Usage Examples
+
+**Spawning new specialists:**
+```python
+spawn_worker("database_specialist")  # Schema McDatabase
+spawn_worker("api_designer")         # Swagger McEndpoint
+spawn_worker("code_reviewer")        # Nitpick McReviewer
+spawn_worker("research")             # Googly McResearch
+```
+
+**Delegating work:**
+```python
+delegate_subtask(
+    target_role="database_specialist",
+    subtask="Design schema for user authentication with roles and permissions",
+    priority="high"
+)
+```
+
+**Saving context:**
+```python
+create_checkpoint(
+    title="API Design Complete",
+    content="Defined 12 REST endpoints for user management. See shared/api/openapi.yaml",
+    category="progress"
+)
+```
+
+### Testing Checklist
+
+- [ ] New agents can be spawned via `spawn_worker`
+- [ ] `list_agents()` shows all agents with status
+- [ ] `create_checkpoint` saves to checkpoints.md
+- [ ] `get_context_summary` returns task and file info
+- [ ] `delegate_subtask` logs and broadcasts
+- [ ] `get_recent_changes` shows modified files
+- [ ] Workers see collaboration sections in their prompts
+- [ ] Architect can assign tasks to new specialists
+
+*Last updated: December 8, 2025 (new agents & collaboration update)*
+*Status: 10 specialist agents, collaboration/context tools, enhanced worker prompts*

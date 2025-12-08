@@ -425,6 +425,11 @@ class Chatroom:
                 logger.error(f"Error in should_respond for {agent.name}: {e}")
 
         if not speakers:
+            # Log why each key agent didn't respond for debugging
+            architect = next((a for a in architects), None)
+            if architect:
+                logger.info(f"Architect {architect.name} did not respond. Status: {architect.status.value}, "
+                           f"Memory size: {len(architect._short_term_memory)}")
             logger.info("No agents chose to respond this round")
             return []
 
@@ -480,7 +485,57 @@ class Chatroom:
             round_messages.extend(worker_messages)
             logger.info(f"Worker round complete: {len(worker_messages)} messages")
         
+        # Check if all tasks are now complete and send Auto Orchestrator message
+        try:
+            from core.task_manager import get_task_manager
+            tm = get_task_manager()
+            all_tasks = tm.get_all_tasks()
+            open_tasks = [t for t in all_tasks if t.status in (TaskStatus.PENDING, TaskStatus.IN_PROGRESS)]
+            completed_tasks = [t for t in all_tasks if t.status == TaskStatus.COMPLETED]
+            
+            if not open_tasks and completed_tasks:
+                logger.info(f"All {len(completed_tasks)} tasks complete, sending Auto Orchestrator message")
+                await self._send_auto_orchestrator_message(len(completed_tasks))
+        except Exception as e:
+            logger.warning(f"Failed to check task completion: {e}")
+        
         return round_messages
+    
+    async def _send_auto_orchestrator_message(self, completed_count: int):
+        """Send an Auto Orchestrator message to trigger the Architect.
+        
+        Includes a cooldown to prevent spam if called multiple times.
+        """
+        import time
+        from core.models import Message, MessageRole, MessageType
+        
+        # Cooldown: don't send if we sent one recently (within 10 seconds)
+        now = time.time()
+        last_sent = getattr(self, '_last_auto_orchestrator_time', 0)
+        if now - last_sent < 10:
+            logger.debug("Skipping Auto Orchestrator message (cooldown)")
+            return
+        self._last_auto_orchestrator_time = now
+        
+        auto_msg = Message(
+            content=(
+                f"Phase milestone: {completed_count} task(s) completed, 0 remaining. "
+                "Bossy McArchitect: Review the master plan and assign the next batch of tasks. "
+                "If all planned work is done, summarize the deliverables for the human."
+            ),
+            sender_name="Auto Orchestrator",
+            sender_id="auto_orchestrator",
+            role=MessageRole.HUMAN,
+            message_type=MessageType.CHAT
+        )
+        
+        await self._broadcast_message(auto_msg)
+        
+        # Also add to all agents' memory
+        for agent in list(self._agents.values()):
+            await agent.process_incoming_message(auto_msg)
+        
+        logger.info(f"Auto Orchestrator message sent ({completed_count} tasks completed)")
     
     async def _run_worker_round(self, workers: List[BaseAgent]) -> List[Message]:
         """Run a round specifically for workers with assigned tasks, in parallel."""

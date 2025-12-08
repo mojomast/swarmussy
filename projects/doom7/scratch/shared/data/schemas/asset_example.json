@@ -1,0 +1,19 @@
+{
+  "schema_version": "1.0.0",
+  "data_version": "1.0.0",
+  "id": "33333333-3333-3333-3333-333333333333",
+  "asset_type": "monster",
+  "name": "Goblin",
+  "metadata": {
+    "version": "1.0.0",
+    "author": "Editor Team",
+    "license": "CC-BY",
+    "description": "Goblin monster asset",
+    "tags": ["enemy"]
+  },
+  "data": {
+    "stats": {"health": 100, "attack": 12},
+    "models": {"mesh": "goblin.mesh", "texture": "goblin.png"}
+  },
+  "dependencies": []
+}

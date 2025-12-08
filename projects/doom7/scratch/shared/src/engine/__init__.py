@@ -1,0 +1,1 @@
+# Engine subpackage for Phase 2 (explicit init for stability)

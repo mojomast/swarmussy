@@ -11,13 +11,20 @@
   "architect_model": "openai/gpt-5-nano",
   "swarm_model": "openai/gpt-5-nano",
   "agent_models": {},
+  "default_provider": "requesty",
+  "architect_provider": "requesty",
+  "swarm_provider": "requesty",
+  "zai_api_base_url": "",
+  "zai_api_key": "",
   "disabled_agents": [],
   "theme": "dark",
   "max_tokens": 100000,
   "temperature": 0.8,
   "thinking_tokens": 50000,
   "max_tool_depth": 100,
-  "load_previous_history": false,
+  "load_previous_history": true,
   "api_base_url": "",
-  "api_key": ""
+  "api_key": "",
+  "tool_identifier": "swarm",
+  "custom_tool_id": ""
 }

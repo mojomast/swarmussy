@@ -1,0 +1,62 @@
+openapi: 3.0.0
+info:
+  title: Phase 2 API Draft
+  version: v2-draft
+  description: Draft outline for Phase 2 API surface (engine controller and runtime data)
+servers:
+  - url: /v2
+paths:
+  /editor/level:
+    get:
+      summary: Draft: Get editor level (Phase 2)
+      operationId: draft_get_level_v2
+      responses:
+        '200':
+          description: OK (draft)
+          content:
+            application/json:
+              schema:
+                type: object
+              example:
+                level_id: "level_01"
+                name: "Draft Level"
+                version: "v2.0"
+                content: {}
+    post:
+      summary: Draft: Upsert editor level (Phase 2)
+      operationId: draft_upsert_level_v2
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Draft OK
+          content:
+            application/json:
+              schema:
+                type: object
+  /engine/render_stats:
+    get:
+      summary: Draft: Get render stats
+      operationId: draft_get_render_stats_v2
+      responses:
+        '200':
+          description: Draft OK
+          content:
+            application/json:
+              schema:
+                type: object
+  /events/stream:
+    get:
+      summary: Draft: Stream events
+      operationId: draft_stream_events_v2
+      responses:
+        '200':
+          description: Draft OK
+          content:
+            text/event-stream:
+              schema:
+                type: string
