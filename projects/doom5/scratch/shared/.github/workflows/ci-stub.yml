@@ -1,0 +1,20 @@
+name: CI Stub
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+jobs:
+  ci-stub:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+      - name: Run CI stub
+        shell: bash
+        run: |
+          bash scratch/shared/scripts/ci-run.sh
