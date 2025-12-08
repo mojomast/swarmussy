@@ -356,10 +356,12 @@ Keep chat responses concise and focused on the task. Use the tools for the heavy
         callback = get_api_log_callback()
         import time
         start_time = time.time()
+        request_id = f"{self.agent_id}-{int(start_time * 1000)}"
         
         if callback:
             try:
                 callback("request", self.name, {
+                    "request_id": request_id,
                     "model": self.model,
                     "max_tokens": payload.get("max_tokens"),
                     "tools": bool(payload.get("tools")),
@@ -389,7 +391,7 @@ Keep chat responses concise and focused on the task. Use the tools for the heavy
                     # Log error to TUI
                     if callback:
                         try:
-                            callback("response", self.name, {"status": response.status, "elapsed": elapsed})
+                            callback("response", self.name, {"request_id": request_id, "status": response.status, "elapsed": elapsed})
                         except Exception:
                             pass
                     return {}
@@ -400,7 +402,7 @@ Keep chat responses concise and focused on the task. Use the tools for the heavy
                     logger.error(f"[{self.name}] Failed to parse JSON: {e}")
                     if callback:
                         try:
-                            callback("error", self.name, {"error": "JSON parse error", "elapsed": elapsed})
+                            callback("error", self.name, {"request_id": request_id, "error": "JSON parse error", "elapsed": elapsed})
                         except Exception:
                             pass
                     return {}
@@ -425,6 +427,31 @@ Keep chat responses concise and focused on the task. Use the tools for the heavy
                     completion_tokens = data['usage'].get('completion_tokens', 0)
                     current_task = getattr(self, 'current_task_description', '')
                     tracker.add_usage(prompt_tokens, completion_tokens, agent_name=self.name, task=current_task)
+                    # If a single request's prompt context is very large, nudge
+                    # the orchestrator to consider a handoff to a fresh worker.
+                    try:
+                        CONTEXT_HANDOFF_THRESHOLD = 80_000
+                        if (
+                            prompt_tokens >= CONTEXT_HANDOFF_THRESHOLD
+                            and self.current_task_id
+                            and getattr(self, "_context_handoff_task_id", None) != self.current_task_id
+                        ):
+                            from core.chatroom import get_chatroom
+
+                            self._context_handoff_task_id = self.current_task_id
+                            chatroom = await get_chatroom()
+                            await chatroom.add_human_message(
+                                content=(
+                                    f"Context for {self.name}'s current task has grown to about "
+                                    f"{prompt_tokens} prompt tokens. "
+                                    "Please hand off this work to a fresh worker with a concise summary "
+                                    "so future calls stay under ~80k tokens of context."
+                                ),
+                                username="Auto Orchestrator",
+                                user_id="auto_orchestrator",
+                            )
+                    except Exception:
+                        pass
                 
                 # Log successful response to TUI
                 if callback:
@@ -440,6 +467,7 @@ Keep chat responses concise and focused on the task. Use the tools for the heavy
                                     tool_calls_data = choice["message"]["tool_calls"]
                         
                         callback("response", self.name, {
+                            "request_id": request_id,
                             "status": 200,
                             "usage": data.get("usage", {}),
                             "elapsed": elapsed,
@@ -457,7 +485,7 @@ Keep chat responses concise and focused on the task. Use the tools for the heavy
             logger.error(f"[{self.name}] API timeout after 120 seconds")
             if callback:
                 try:
-                    callback("error", self.name, {"error": "Timeout", "elapsed": elapsed})
+                    callback("error", self.name, {"request_id": request_id, "error": "Timeout", "elapsed": elapsed})
                 except Exception:
                     pass
             return {}
@@ -466,7 +494,7 @@ Keep chat responses concise and focused on the task. Use the tools for the heavy
             logger.error(f"[{self.name}] HTTP client error: {e}")
             if callback:
                 try:
-                    callback("error", self.name, {"error": str(e)[:40], "elapsed": elapsed})
+                    callback("error", self.name, {"request_id": request_id, "error": str(e)[:40], "elapsed": elapsed})
                 except Exception:
                     pass
             return {}
@@ -475,7 +503,7 @@ Keep chat responses concise and focused on the task. Use the tools for the heavy
             logger.error(f"[{self.name}] Unexpected API error: {type(e).__name__}: {e}")
             if callback:
                 try:
-                    callback("error", self.name, {"error": f"{type(e).__name__}: {str(e)[:30]}", "elapsed": elapsed})
+                    callback("error", self.name, {"request_id": request_id, "error": f"{type(e).__name__}: {str(e)[:30]}", "elapsed": elapsed})
                 except Exception:
                     pass
             return {}

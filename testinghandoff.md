@@ -285,6 +285,26 @@ After automated tests pass, manually verify:
 7. **API Pulse Indicator**: In TUI mode, send a message and watch the header subtitle:
    - It should switch from `API ○ idle` to `API ↑ req` when a request is sent, then `API ↓ resp` when a response arrives, before returning to `idle`.
 
+8. **TUI API Log & History**: In TUI mode, watch the right sidebar's API log:
+   - Send a few messages so multiple API calls are in flight.
+   - Verify that requests with a wrench icon appear in the **In-flight** section at the top.
+   - After responses arrive, verify those entries move into the **History** section below and remain scrollable.
+   - Click an entry multiple times and confirm it cycles through collapsed → summary → full details.
+
+9. **Floating File Browser**: In TUI mode, open the file browser:
+   - Press `Ctrl+F` or click the `📁 FILES` button in the header.
+   - Verify the left-hand list shows the current project's files (without noisy internal/hidden directories).
+   - Select several files and confirm their contents appear in the right-hand preview, with large or binary files handled gracefully (truncated or placeholder).
+
+10. **Checky McManager Proactivity**:
+    - Use the Tasks screen (`Ctrl+T`) or commands to create, assign, and complete/fail tasks.
+    - Verify that Checky posts new status updates whenever task state changes (new tasks, assignments, completions, failures), rather than only after very long runs.
+
+11. **Auto-Orchestrator Handoff**:
+    - Run a longer swarm session with `auto_chat` enabled.
+    - After all open tasks for a project complete, watch for an "Auto Orchestrator" message prompting next steps and confirm a new round starts without you typing.
+    - For heavy-context tasks, monitor logs and the TOKENS panel; when a single worker call grows very large, you should see an "Auto Orchestrator" message asking to hand off work to a fresh worker with a concise summary.
+
 ---
 
 ## Contact

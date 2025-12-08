@@ -19,6 +19,8 @@ A multi-agent AI development system where specialized AI agents collaborate to b
 - **Snapshots** - `/snapshot [label]` copies the entire project workspace into a timestamped `snapshots/` folder for safe checkpoints
 - **Protected DevPlan Ownership** - Only Bossy McArchitect can edit `devplan.md` and `master_plan.md`; workers and Checky request changes which the Architect applies
 - **Team Logs** - Shared `scratch/shared/decisions.md` and `scratch/shared/team_log.md` capture decisions, milestones, and major swarm events
+- **Floating File Browser** - Press `Ctrl+F` (or click `📁 FILES` in the TUI header) to browse the current project's tree and preview files
+- **Context-Aware Auto Orchestrator** - Tracks task state and long contexts, injecting handoff prompts when a worker's prompt for a single call nears ~80k tokens
 
 ## Agent Roster
 
@@ -99,6 +101,8 @@ python main.py --cli
 | `Ctrl+Up` | Scroll Agents up |
 | `Ctrl+Down` | Scroll Agents down |
 | `Ctrl+T` | Task Control |
+| `Ctrl+P` | Refresh DevPlan panel |
+| `Ctrl+F` | Open File Browser |
 | `Ctrl+X` | Stop Current Task |
 | `Ctrl+R` | Refresh Panels |
 | `Ctrl+Q` | Quit |
@@ -117,7 +121,6 @@ The Textual TUI (`--tui`) features a 3-column layout:
 **Left Column:**
 - Agent cards with a compact 2‑line summary (tokens, current action, task, latest tool) that expand on click for full history; right‑click a card to halt that agent and prompt the Architect to adjust the plan
 - Scrollable AGENTS panel for large swarms (`Ctrl+A` to focus, then `Ctrl+Up` / `Ctrl+Down` to scroll when many agents are present)
-- API Log panel with real-time request/response tracking (timestamps, elapsed time, token counts, input/output previews)
 
 **Center Column:**
 - Main chat log with word-wrapped messages
@@ -127,6 +130,8 @@ The Textual TUI (`--tui`) features a 3-column layout:
 - Token usage panel (totals and per-agent breakdown)
 - Tool calls panel (real-time tool activity)
 - DevPlan panel (scrollable `devplan.md` dashboard with master plan and todo view)
+- API Log panel with pinned in-flight requests at the top and a scrollable history below, each entry supporting multi-level expansion (collapsed > summary > full details)
+- `📁 FILES` button and `Ctrl+F` shortcut open a floating file browser with project tree and read-only file preview
 
 ## API Activity Pulse (TUI)
 
@@ -236,6 +241,8 @@ The dashboard shows real-time token usage:
 - Completion tokens (output)
 - Total tokens
 - API call count
+
+Token totals are cumulative for the lifetime of the current TUI session (they do not reset per task or round), so long-running swarms can easily reach millions of tokens. Per-agent rows show each agent's cumulative share, which may look similar when all workers share the same long context.
 
 Use `/dashboard` to see a snapshot anytime.
 

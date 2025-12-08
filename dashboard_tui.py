@@ -195,6 +195,170 @@ class SettingsScreen(ModalScreen):
     def cancel(self): self.dismiss(False)
 
 
+class FileBrowserScreen(ModalScreen):
+    """Modal screen for browsing project files and viewing contents."""
+
+    BINDINGS = [Binding("escape", "dismiss", "Close")]
+
+    CSS = """
+    FileBrowserScreen {
+        align: center middle;
+    }
+
+    #file-browser-container {
+        width: 95%;
+        max-width: 320;
+        height: 85%;
+        max-height: 60;
+        border: thick $primary;
+        background: $surface;
+        padding: 2;
+        layout: vertical;
+    }
+
+    #file-browser-header {
+        height: auto;
+        margin-bottom: 1;
+    }
+
+    #file-browser-body {
+        height: 1fr;
+        layout: horizontal;
+    }
+
+    #file-list-panel {
+        width: 1fr;
+        border-right: solid $primary-darken-2;
+        padding-right: 1;
+    }
+
+    #file-viewer-panel {
+        width: 1.4fr;
+        padding-left: 1;
+    }
+
+    #file-list {
+        height: 1fr;
+        overflow: auto;
+    }
+
+    #file-viewer {
+        height: 1fr;
+        overflow: auto;
+    }
+
+    #file-browser-buttons {
+        height: auto;
+        margin-top: 1;
+    }
+    """
+
+    def compose(self) -> ComposeResult:
+        from core.project_manager import get_project_manager
+
+        pm = get_project_manager()
+        project = pm.current
+
+        title = "📁 PROJECT FILES"
+        if project is not None:
+            title = f"📁 FILES — {project.name}"
+
+        with Vertical(id="file-browser-container"):
+            with Container(id="file-browser-header"):
+                yield Label(title, classes="section-title")
+                yield Rule()
+
+            with Container(id="file-browser-body"):
+                with Vertical(id="file-list-panel"):
+                    yield Label("Structure", classes="section-title")
+                    yield OptionList(id="file-list")
+                with Vertical(id="file-viewer-panel"):
+                    yield Label("Preview", id="file-viewer-title", classes="section-title")
+                    yield Static("Select a file on the left to preview its contents.", id="file-viewer")
+
+            yield Rule()
+            with Horizontal(id="file-browser-buttons"):
+                yield Button("Close", variant="primary", id="file-browser-close")
+
+    async def on_mount(self):
+        await self._load_files()
+
+    async def _load_files(self):
+        """Populate the file list from the current project's root."""
+        from core.project_manager import get_project_manager
+
+        pm = get_project_manager()
+        project = pm.current
+        option_list = self.query_one("#file-list", OptionList)
+        option_list.clear_options()
+
+        if project is None or not project.root.exists():
+            option_list.add_option(Option("(no active project)", ""))
+            return
+
+        root = project.root
+
+        paths = []
+        try:
+            for path in root.rglob("*"):
+                if not path.is_file():
+                    continue
+                rel = path.relative_to(root)
+                # Skip hidden and internal folders
+                if any(part.startswith(".") for part in rel.parts):
+                    continue
+                if any(part in {"data", "scratch", "__pycache__", "node_modules"} for part in rel.parts):
+                    continue
+                paths.append(rel)
+        except Exception:
+            paths = []
+
+        paths.sort()
+
+        for rel in paths:
+            depth = len(rel.parts) - 1
+            indent = "  " * depth
+            label = f"{indent}{rel.name}"
+            option_list.add_option(Option(label, str(rel)))
+
+    @on(OptionList.OptionSelected, "#file-list")
+    def on_file_selected(self, event: OptionList.OptionSelected):
+        """Load and display the selected file in the preview pane."""
+        from core.project_manager import get_project_manager
+
+        rel_value = event.option.value
+        if not rel_value:
+            return
+
+        pm = get_project_manager()
+        project = pm.current
+        if project is None:
+            return
+
+        root = project.root
+        full_path = root / rel_value
+
+        viewer = self.query_one("#file-viewer", Static)
+        title = self.query_one("#file-viewer-title", Label)
+        title.update(f"📄 {rel_value}")
+
+        try:
+            # Try to read as UTF-8 text; fall back to binary summary
+            text = full_path.read_text(encoding="utf-8")
+            if len(text) > 8000:
+                text = text[:8000] + "\n… (truncated)"
+            viewer.update(text)
+        except UnicodeDecodeError:
+            size = full_path.stat().st_size
+            viewer.update(f"(binary file, {size} bytes)")
+        except Exception as e:
+            viewer.update(f"Error reading file: {e}")
+
+    @on(Button.Pressed, "#file-browser-close")
+    def close_browser(self):
+        self.dismiss()
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # SCROLLABLE WIDGET PANELS
 # ─────────────────────────────────────────────────────────────────────────────
@@ -442,6 +606,8 @@ class ApiLogEntry(Static):
         super().__init__(**kwargs)
         self.entry_id = entry_id
         self.expanded = False
+        # 0 = collapsed, 1 = summary, 2 = full details
+        self.detail_level = 0
         self.request_data = {}
         self.response_data = {}
         self.header_text = ""
@@ -474,7 +640,7 @@ class ApiLogEntry(Static):
         preview = data.get("preview", "")[:40]
         
         status_icon = "✓" if status == 200 else "✗"
-        toggle = "[-]" if self.expanded else "[+]"
+        toggle = "[-]" if self.detail_level > 0 else "[+]"
         
         self.header_text = f"{toggle} [{timestamp}] {status_icon} {short_name} {elapsed:.1f}s [{total:,} tok]"
         if preview:
@@ -486,7 +652,41 @@ class ApiLogEntry(Static):
         """Update the display."""
         lines = [self.header_text]
         
-        if self.expanded and self.has_response:
+        # Level 1: compact summary view (no full message bodies)
+        if self.detail_level == 1:
+            lines.append("")
+            lines.append("═══ SUMMARY ═══")
+
+            model = self.request_data.get("model", "?")
+            max_tokens = self.request_data.get("max_tokens", "?")
+            msg_count = self.request_data.get("msg_count", "?")
+            lines.append(f"  Model: {model}")
+            lines.append(f"  Max Tokens: {max_tokens}")
+            lines.append(f"  Messages: {msg_count}")
+
+            tool_names = self.request_data.get("tool_names", [])
+            if tool_names:
+                lines.append(f"  Tools: {', '.join(tool_names[:5])}")
+                if len(tool_names) > 5:
+                    lines.append(f"         +{len(tool_names) - 5} more")
+
+            if self.has_response:
+                usage = self.response_data.get("usage", {})
+                elapsed = self.response_data.get("elapsed", 0)
+                total = usage.get("prompt_tokens", 0) + usage.get("completion_tokens", 0)
+                lines.append(f"  Time: {elapsed:.2f}s")
+                lines.append(f"  Total Tokens: {total:,}")
+                preview = self.response_data.get("preview") or self.response_data.get("full_response", "")
+                if preview:
+                    lines.append("")
+                    lines.append(f"  Preview: {preview[:120]}...")
+                    lines.append("")
+                    lines.append("  (click again for full request/response details)")
+            else:
+                lines.append("  Status: waiting for response…")
+
+        # Level 2+: full details as before
+        elif self.detail_level >= 2 and self.has_response:
             lines.append("")
             lines.append("═══ REQUEST ═══")
             
@@ -503,7 +703,7 @@ class ApiLogEntry(Static):
                 if len(tool_names) > 8:
                     lines.append(f"         {', '.join(tool_names[8:])}")
             
-            # Show messages (full content when expanded)
+            # Show messages (full content in detailed view)
             messages = self.request_data.get("messages", [])
             lines.append("")
             lines.append(f"  Messages ({len(messages)}):")
@@ -511,11 +711,10 @@ class ApiLogEntry(Static):
                 role = msg.get("role", "?")
                 content = msg.get("content") or ""
                 lines.append(f"  ┌─[{i+1}] {role.upper()}")
-                # Show full content, wrapped
                 content_lines = content.split('\n')
-                for cl in content_lines:  # Show all lines
+                for cl in content_lines:
                     lines.append(f"  │ {cl}")
-                lines.append(f"  └─────")
+                lines.append("  └─────")
             
             lines.append("")
             lines.append("═══ RESPONSE ═══")
@@ -527,18 +726,16 @@ class ApiLogEntry(Static):
             lines.append(f"  Completion Tokens: {usage.get('completion_tokens', 0):,}")
             lines.append(f"  Total Tokens: {usage.get('prompt_tokens', 0) + usage.get('completion_tokens', 0):,}")
             
-            # Show response content (full when expanded)
             full_response = self.response_data.get("full_response", "")
             if full_response:
                 lines.append("")
                 lines.append("  Content:")
                 lines.append("  ┌─────")
                 response_lines = full_response.split('\n')
-                for rl in response_lines:  # Show all lines
+                for rl in response_lines:
                     lines.append(f"  │ {rl}")
                 lines.append("  └─────")
             
-            # Show tool calls (full details when expanded)
             tool_calls = self.response_data.get("tool_calls", [])
             if tool_calls:
                 lines.append("")
@@ -548,33 +745,44 @@ class ApiLogEntry(Static):
                     name = func.get("name", "?")
                     args = func.get("arguments", "")
                     lines.append(f"  ┌─ {name}")
-                    # Parse and show args nicely
                     try:
                         import json
                         args_dict = json.loads(args) if args else {}
                         for k, v in args_dict.items():
                             v_str = str(v)
-                            # Show full argument value
                             lines.append(f"  │   {k}: {v_str}")
                     except:
-                        # Show full args string
                         lines.append(f"  │   {args}")
-                    lines.append(f"  └─────")
+                    lines.append("  └─────")
             
             lines.append("═════════════════")
         
         self.update("\n".join(lines))
     
     def toggle_expand(self):
-        """Toggle expanded state."""
-        if self.has_response:
-            self.expanded = not self.expanded
-            # Update header toggle indicator
-            if self.expanded:
-                self.header_text = self.header_text.replace("[+]", "[-]", 1)
-            else:
-                self.header_text = self.header_text.replace("[-]", "[+]", 1)
-            self._update_display()
+        """Toggle expanded state.
+
+        Cycles through: collapsed → summary → full → collapsed.
+        """
+        if not self.has_response and not self.request_data:
+            return
+
+        if self.detail_level == 0:
+            self.detail_level = 1
+            self.expanded = True
+        elif self.detail_level == 1:
+            self.detail_level = 2
+            self.expanded = True
+        else:
+            self.detail_level = 0
+            self.expanded = False
+
+        if "[+]" in self.header_text and self.detail_level > 0:
+            self.header_text = self.header_text.replace("[+]", "[-]", 1)
+        elif "[-]" in self.header_text and self.detail_level == 0:
+            self.header_text = self.header_text.replace("[-]", "[+]", 1)
+
+        self._update_display()
     
     async def on_click(self, event):
         """Handle click to toggle expansion."""
@@ -622,7 +830,7 @@ class SwarmDashboard(App):
     .agent-card {
         width: 100%;
         height: auto;
-        min-height: 8;  /* Increased height for details */
+        min-height: 4;  /* More compact when collapsed */
         margin-bottom: 1;
         padding: 0;
         overflow: hidden;
@@ -699,22 +907,28 @@ class SwarmDashboard(App):
     }
 
     #plan-scroll {
-        height: 0.7fr;  /* Majority of remaining height for DevPlan */
+        height: 0.55fr;  /* Majority of remaining height for DevPlan */
         padding: 1;
         overflow: auto;
     }
 
     #api-log-scroll {
-        height: 0.3fr;  /* Lower portion of right sidebar under DevPlan */
+        height: 0.45fr;  /* Lower portion of right sidebar under DevPlan (more room for API calls) */
         padding: 1;
         overflow-y: auto;
         overflow-x: auto;
     }
 
-    #api-log-container {
+    #api-log-inflight, #api-log-history {
         width: 100%;
         height: auto;
         padding: 0;
+    }
+
+    #api-log-inflight {
+        border-bottom: solid $primary-darken-3;
+        padding-bottom: 1;
+        margin-bottom: 1;
     }
 
     .section-title {
@@ -732,6 +946,12 @@ class SwarmDashboard(App):
         scrollbar-gutter: stable;
     }
     
+    #files-btn {
+        dock: bottom;
+        width: 100%;
+        margin: 0 1;
+    }
+
     #stop-btn {
         dock: bottom;
         width: 100%;
@@ -759,6 +979,7 @@ class SwarmDashboard(App):
         Binding("ctrl+x", "stop_current", "Stop"),
         Binding("ctrl+r", "refresh", "Refresh"),
         Binding("ctrl+p", "refresh_plan", "Plan"),
+        Binding("ctrl+f", "open_files", "Files"),
         Binding("f1", "show_help", "Help"),
         Binding("ctrl+a", "focus_agents", "Agents"),
         Binding("ctrl+up", "scroll_agents_up", "Agents ▲"),
@@ -843,8 +1064,10 @@ class SwarmDashboard(App):
                 yield Label("📋 DEVPLAN", classes="section-title")
                 yield DevPlanPanel(id="devplan")
             with ScrollableContainer(id="api-log-scroll"):
-                yield Label("📡 API LOG (click to expand)", classes="section-title")
-                yield Vertical(id="api-log-container")
+                yield Label("📡 API LOG (in-flight ↑, history ↓ — click to cycle details)", classes="section-title")
+                yield Vertical(id="api-log-inflight")
+                yield Vertical(id="api-log-history")
+            yield Button("📁 FILES", variant="primary", id="files-btn")
             yield Button("⏹ STOP", variant="error", id="stop-btn")
 
         yield Footer()
@@ -858,8 +1081,10 @@ class SwarmDashboard(App):
         self.token_panel = self.query_one("#tokens", TokenDetailPanel)
         self.devplan_panel = self.query_one("#devplan", DevPlanPanel)
         self.tools_log = self.query_one("#tools-log", ToolCallsLog)
-        self.api_log_container = self.query_one("#api-log-container", Vertical)
+        self.api_log_inflight = self.query_one("#api-log-inflight", Vertical)
+        self.api_log_history = self.query_one("#api-log-history", Vertical)
         self.api_log_entries: Dict[str, ApiLogEntry] = {}
+        self.api_inflight_entries: Dict[str, ApiLogEntry] = {}
         self.api_entry_counter = 0
         self.current_request_id = None
         
@@ -948,53 +1173,73 @@ class SwarmDashboard(App):
     def on_api_call(self, event_type: str, agent_name: str, data: dict):
         """Handle API request/response logging with expandable entries."""
         timestamp = datetime.now().strftime("%H:%M:%S")
-        
+        request_id = data.get("request_id")
+
         if event_type == "request":
             self.api_status = "request"
             self.set_timer(0.7, lambda: setattr(self, "api_status", "idle"))
-            # Create new entry for this request
-            self.api_entry_counter += 1
-            entry_id = f"api-entry-{self.api_entry_counter}"
-            self.current_request_id = entry_id
-            
-            entry = ApiLogEntry(entry_id)
+
+            if not request_id:
+                self.api_entry_counter += 1
+                request_id = f"api-entry-{self.api_entry_counter}"
+            self.current_request_id = request_id
+
+            entry = ApiLogEntry(request_id)
             entry.set_request(timestamp, agent_name, data)
-            self.api_log_entries[entry_id] = entry
-            self.api_log_container.mount(entry)
-            
-            # Keep only last 50 entries to prevent memory issues
-            if len(self.api_log_entries) > 50:
-                oldest_id = list(self.api_log_entries.keys())[0]
-                oldest_entry = self.api_log_entries.pop(oldest_id)
-                oldest_entry.remove()
-                
+            self.api_log_entries[request_id] = entry
+            self.api_inflight_entries[request_id] = entry
+            try:
+                self.api_log_inflight.mount(entry)
+            except Exception:
+                pass
+
+            self._trim_api_history()
+
         elif event_type == "response":
             self.api_status = "response"
             self.set_timer(0.9, lambda: setattr(self, "api_status", "idle"))
-            # Update the current request entry with response
-            if self.current_request_id and self.current_request_id in self.api_log_entries:
-                entry = self.api_log_entries[self.current_request_id]
+
+            if not request_id:
+                request_id = self.current_request_id
+
+            if request_id and request_id in self.api_log_entries:
+                entry = self.api_log_entries[request_id]
                 entry.set_response(timestamp, agent_name, data)
-                
-                # Update agent card tokens
-                status = data.get("status", "?")
+
                 usage = data.get("usage", {})
+                status = data.get("status", "?")
                 total = usage.get("prompt_tokens", 0) + usage.get("completion_tokens", 0)
-                
+
                 if status == 200 and total > 0:
                     for card in self.agent_cards.values():
                         if agent_name and agent_name in card.agent.name:
                             card.add_tokens(total)
                             break
-            
+
+                if request_id in self.api_inflight_entries:
+                    try:
+                        entry.remove()
+                    except Exception:
+                        pass
+                    try:
+                        self.api_log_history.mount(entry)
+                    except Exception:
+                        pass
+                    self.api_inflight_entries.pop(request_id, None)
+
+                self._trim_api_history()
+
             self.current_request_id = None
-                
+
         elif event_type == "error":
             self.api_status = "error"
             self.set_timer(1.2, lambda: setattr(self, "api_status", "idle"))
-            # Update current entry with error
-            if self.current_request_id and self.current_request_id in self.api_log_entries:
-                entry = self.api_log_entries[self.current_request_id]
+
+            if not request_id:
+                request_id = self.current_request_id
+
+            if request_id and request_id in self.api_log_entries:
+                entry = self.api_log_entries[request_id]
                 error_data = {
                     "status": "error",
                     "usage": {},
@@ -1004,8 +1249,38 @@ class SwarmDashboard(App):
                     "tool_calls": []
                 }
                 entry.set_response(timestamp, agent_name, error_data)
-            
+
+                if request_id in self.api_inflight_entries:
+                    try:
+                        entry.remove()
+                    except Exception:
+                        pass
+                    try:
+                        self.api_log_history.mount(entry)
+                    except Exception:
+                        pass
+                    self.api_inflight_entries.pop(request_id, None)
+
+                self._trim_api_history()
+
             self.current_request_id = None
+
+    def _trim_api_history(self):
+        """Keep API log history bounded while preserving in-flight entries."""
+        max_entries = 50
+        if len(self.api_log_entries) <= max_entries:
+            return
+
+        # Only prune from history (leave in-flight entries alone)
+        while len(self.api_log_entries) > max_entries and self.api_log_history.children:
+            oldest_widget = self.api_log_history.children[0]
+            oldest_id = getattr(oldest_widget, "entry_id", None)
+            try:
+                oldest_widget.remove()
+            except Exception:
+                pass
+            if oldest_id and oldest_id in self.api_log_entries and oldest_id not in self.api_inflight_entries:
+                self.api_log_entries.pop(oldest_id, None)
 
     def on_chat_message(self, message: ChatMessage):
         if message.sender_id == "auto_summary":
@@ -1132,6 +1407,12 @@ class SwarmDashboard(App):
         # Kick off another conversation round; @work(exclusive=True) prevents
         # overlapping runs.
         self.is_processing = True
+
+        # If we are advancing purely because of an auto-orchestrator hint,
+        # consume that flag here so it doesn't keep firing forever.
+        if not has_open and self.auto_orchestrator_pending:
+            self.auto_orchestrator_pending = False
+
         self.run_conversation()
 
 
@@ -1161,8 +1442,6 @@ class SwarmDashboard(App):
             await self.chatroom.run_conversation_round()
         finally:
             self.is_processing = False
-            # Any pending auto-orchestrator hint has now been handled
-            self.auto_orchestrator_pending = False
             self.refresh_panels()
 
     async def handle_command(self, line: str):
@@ -1195,6 +1474,8 @@ class SwarmDashboard(App):
             await self.action_stop_current()
         elif cmd == "/plan":
             self.action_refresh_plan()
+        elif cmd == "/files":
+            self.action_open_files()
         elif cmd == "/status":
             status = self.chatroom.get_status()
             tracker = get_token_tracker()
@@ -1238,6 +1519,9 @@ class SwarmDashboard(App):
                 self.update_status_line()
         self.push_screen(SettingsScreen(), on_dismiss)
 
+    def action_open_files(self):
+        self.push_screen(FileBrowserScreen())
+
     def action_open_tasks(self):
         # Simple task display in chat for now
         tm = get_task_manager()
@@ -1274,6 +1558,10 @@ class SwarmDashboard(App):
     @on(Button.Pressed, "#stop-btn")
     async def on_stop_button(self):
         await self.action_stop_current()
+
+    @on(Button.Pressed, "#files-btn")
+    def on_files_button(self):
+        self.action_open_files()
 
     async def action_snapshot(self, label: str = ""):
         """Create a snapshot of the current project folder.

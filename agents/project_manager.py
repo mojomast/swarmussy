@@ -106,3 +106,35 @@ class ProjectManager(BaseAgent):
     @property
     def persona_description(self) -> str:
         return "Technical Project Manager specializing in progress tracking and team coordination"
+
+    def should_respond(self) -> bool:
+        """Decide when Checky should provide an update.
+
+        Instead of speaking at random, Checky responds whenever the swarm's
+        task state changes (new tasks, assignments, completions, failures).
+        """
+        try:
+            from core.task_manager import get_task_manager
+            tm = get_task_manager()
+            tasks = tm.get_all_tasks()
+        except Exception:
+            tasks = []
+
+        if not tasks:
+            return False
+
+        # Snapshot of the task state: (id, status, assigned_to)
+        snapshot = [(t.id, t.status.value, getattr(t, "assigned_to", None)) for t in tasks]
+        last_snapshot = getattr(self, "_last_task_snapshot", None)
+
+        # First time we see tasks: report once to establish a baseline
+        if last_snapshot is None:
+            self._last_task_snapshot = snapshot
+            return True
+
+        # If anything changed since the last report, speak up
+        if snapshot != last_snapshot:
+            self._last_task_snapshot = snapshot
+            return True
+
+        return False

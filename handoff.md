@@ -472,3 +472,50 @@ Added verbose API request/response logging in the TUI:
 
 *Last updated: December 7, 2025*
 *Status: DevPlan ownership enforced, shared logs online, per-agent models and snapshots available for testing*
+
+## Latest Updates (December 7, 2025 - Auto-Orchestrator, Context Handoff, TUI API Log & File Browser)
+
+### 1. Auto-Orchestrator Nudge Reliability
+
+- **Problem**: The auto-orchestrator "nudge" message didn't always trigger a follow-up swarm round, and workers could reply based on stale tasks after the nudge.
+- **Solution**:
+  - `dashboard_tui.py::SwarmDashboard.auto_chat_tick` now checks `auto_orchestrator_pending` and only clears it when scheduling `run_conversation()`.
+  - `run_conversation()` no longer resets `auto_orchestrator_pending` in its `finally` block; the flag is owned solely by `auto_chat_tick`.
+  - When the last open task completes, `BaseAgent.respond` injects an "Auto Orchestrator" human message requesting next steps; the next auto-chat tick reliably kicks off a new round.
+
+### 2. Context Handoff Guard (~80k Tokens)
+
+- **Problem**: Workers could accumulate extremely large per-call contexts (80k–100k+ tokens) and keep dragging them forward, bloating token usage.
+- **Solution** (`agents/base_agent.py::_call_api`):
+  - After each API response, we read `usage.prompt_tokens` for that call.
+  - If a single call for the current `task_id` crosses a `CONTEXT_HANDOFF_THRESHOLD` of ~80,000 prompt tokens and we haven't already done so for that task, the agent sends a one-time "Auto Orchestrator" message asking Bossy/Checky to hand off the work to a fresh worker with a concise summary.
+  - This keeps future calls for that task under ~80k tokens of context.
+
+### 3. Token Tracker Semantics & Checky McManager
+
+- Clarified that totals in `core/token_tracker.py` (and the TOKENS panel) are **session-cumulative**, not per task:
+  - `prompt_tokens` → "Input"
+  - `completion_tokens` → "Output"
+  - `total_tokens` → "Total"
+  - `call_count` → "Calls"
+- Large, similar per-agent totals (for example several workers around 2.7M tokens) are expected when they all share the same long-running project context.
+- `agents/project_manager.py::ProjectManager.should_respond` was rewritten so Checky McManager responds whenever the global task snapshot changes (tasks created/assigned/completed/failed), making him more present throughout long runs.
+
+### 4. TUI Right Sidebar: API Log & File Browser
+
+- **API log** (`dashboard_tui.py`):
+  - Right sidebar now dedicates a lower region to an API log with two parts:
+    - **In-flight**: pinned requests (with wrench icon) that are currently running.
+    - **History**: completed/error calls appended below in a scrollable container.
+  - Each `ApiLogEntry` cycles through three detail levels on click:
+    - Level 0 – collapsed header only.
+    - Level 1 – summary (model, elapsed time, token counts, short request/response previews).
+    - Level 2 – full request/response body and tool metadata.
+- **Floating file browser**:
+  - New `FileBrowserScreen` lists the current project's files using `Project.root` from `core/project_manager.py`.
+  - Open via `Ctrl+F` or the `📁 FILES` button in the TUI header.
+  - Left: scrollable file list (internal/hidden paths filtered out).
+  - Right: read-only file preview with simple truncation/placeholder handling for huge/binary files.
+
+*Last updated: December 7, 2025 (evening)*
+*Status: Auto-orchestrator nudge + context handoff online; TUI API log and file browser ready for manual testing*
