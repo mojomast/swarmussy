@@ -10,11 +10,12 @@
   "default_model": "openai/gpt-5-nano",
   "architect_model": "openai/gpt-5-nano",
   "swarm_model": "openai/gpt-5-nano",
+  "agent_models": {},
   "disabled_agents": [],
   "theme": "dark",
   "max_tokens": 100000,
   "temperature": 0.8,
   "thinking_tokens": 50000,
   "max_tool_depth": 100,
-  "load_previous_history": false
+  "load_previous_history": true
 }

@@ -15,6 +15,10 @@ A multi-agent AI development system where specialized AI agents collaborate to b
 - **Persistent Settings** - Preferences saved between sessions
 - **Multi-Project Support** - Isolated workspaces for each project
 - **History Control** - Optional "Load previous messages?" prompt per project so you can start from a clean slate or resume prior context
+- **Per-Agent Models** - Use `/model <agent> <model>` in the TUI to override models for specific agents at runtime
+- **Snapshots** - `/snapshot [label]` copies the entire project workspace into a timestamped `snapshots/` folder for safe checkpoints
+- **Protected DevPlan Ownership** - Only Bossy McArchitect can edit `devplan.md` and `master_plan.md`; workers and Checky request changes which the Architect applies
+- **Team Logs** - Shared `scratch/shared/decisions.md` and `scratch/shared/team_log.md` capture decisions, milestones, and major swarm events
 
 ## Agent Roster
 
@@ -77,9 +81,12 @@ python main.py --cli
 | `/agents` | Configure agents (Ctrl+A) |
 | `/tasks` | View/control tasks (Ctrl+T) |
 | `/stop` | Stop current task (Ctrl+X) |
+| `/plan` | Refresh the DevPlan panel from disk (Ctrl+P) |
 | `/fix <reason>` | Stop and request a fix |
 | `/spawn <role>` | Spawn a new agent |
 | `/status` | Show swarm status |
+| `/model [<agent> <model>]` | List agent models or set a specific agent's model in the running swarm |
+| `/snapshot [label]` | Snapshot the current project folder into `projects/snapshots/` |
 | `/clear` | Clear chat history |
 | `/quit` | Exit (Ctrl+Q) |
 
@@ -108,7 +115,7 @@ python main.py --cli
 The Textual TUI (`--tui`) features a 3-column layout:
 
 **Left Column:**
-- Agent cards showing status, tokens used, and recent accomplishments (click a card to expand/collapse its full "Latest" history – the title shows `▸`/`▾`)
+- Agent cards with a compact 2‑line summary (tokens, current action, task, latest tool) that expand on click for full history; right‑click a card to halt that agent and prompt the Architect to adjust the plan
 - Scrollable AGENTS panel for large swarms (`Ctrl+A` to focus, then `Ctrl+Up` / `Ctrl+Down` to scroll when many agents are present)
 - API Log panel with real-time request/response tracking (timestamps, elapsed time, token counts, input/output previews)
 
@@ -138,19 +145,28 @@ The pulse automatically returns to `idle` after a short delay.
 
 The system uses role-based tool access to enforce proper orchestration:
 
-**Orchestrator / PM Tools** (Architect + Project Manager):
+**Orchestrator Tools** (Bossy McArchitect only):
 - `spawn_worker` - Bring in team members
-- `assign_task` - Delegate work to workers
-- `get_swarm_state` - Check agent/task status and drive devplan/status reporting
-- `read_file`, `write_file` - For plans and dashboards only (e.g. `master_plan.md`, `devplan.md`, `status_report.md`, `blockers.md`, `timeline.md`, `decisions.md`)
+- `create_task` - Create tasks in the central TaskManager
+- `assign_task` - Delegate work to workers and mark tasks in progress
+- `get_swarm_state` - Check agent/task status
+- `update_devplan_dashboard` - Regenerate the live DevPlan dashboard from swarm state
+- `read_file`, `write_file` - For planning artifacts (e.g. `master_plan.md`, `devplan.md`) only
+- `list_files`, `get_project_structure` - Project navigation
+
+**Project Manager Tools** (Checky McManager):
+- `get_swarm_state` - Inspect current agents and tasks
+- `create_task`, `update_task_status` - Manage tasks and blockers
+- `read_file`, `write_file` - Maintain status/reporting artifacts (e.g. `status_report.md`, `blockers.md`, `timeline.md`, `decisions.md`)
 
 **Worker Tools** (Backend/Frontend/QA/DevOps/Tech Writer):
-- `read_file`, `write_file`, `edit_file` - Code operations
-- `list_files`, `search_code` - Navigation
-- `run_command` - Safe shell commands
-- `claim_file`, `release_file` - File locking
+- `read_file`, `write_file`, `edit_file`, `append_file` - Code and content operations
+- `list_files`, `search_code` - Navigation and search
+- `run_command` - Safe shell commands (linting, tests, git status, etc.)
+- `claim_file`, `release_file`, `get_file_locks` - File locking for concurrent edits
+- `get_project_structure` - High-level project tree
 
-This ensures the Architect delegates work instead of doing it all.
+Architect ownership of `devplan.md` and `master_plan.md` is enforced at the tool layer: non‑Architect agents can read these files but cannot modify, move, or delete them, and must instead describe desired changes for Bossy to apply.
 
 ### Conversation Flow
 
@@ -207,6 +223,7 @@ Settings in `data/settings.json` (also accessible via Ctrl+S in TUI):
 | `default_model` | `openai/gpt-5-nano` | Default LLM model |
 | `architect_model` | `openai/gpt-5-nano` | Model for Architect |
 | `swarm_model` | `openai/gpt-5-nano` | Model for worker agents |
+| `agent_models` | `{}` | Optional per-agent model overrides keyed by agent name, managed via `/model` |
 | `max_tokens` | `100000` | Max tokens per response |
 | `temperature` | `0.8` | Response creativity (0-1) |
 | `max_tool_depth` | `250` | Max consecutive tool calls per turn |

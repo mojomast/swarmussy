@@ -189,6 +189,8 @@ class Chatroom:
         # Update agent state
         target_agent.status = AgentStatus.WORKING
         target_agent.current_task_id = task.id
+        # Store human-readable task description for dashboards
+        setattr(target_agent, "current_task_description", task_description)
         
         # Announce assignment with status
         await self._broadcast_status(f"📋 Assigning task to {target_agent.name}...")
@@ -405,7 +407,7 @@ class Chatroom:
                     round_messages.append(response)
 
                     # Notify other agents about this message
-                    for other_agent in self._agents.values():
+                    for other_agent in list(self._agents.values()):
                         if other_agent.agent_id != response.sender_id:
                             await other_agent.process_incoming_message(response)
         
@@ -474,7 +476,7 @@ class Chatroom:
                     worker_messages.append(response)
 
                     # Notify other agents
-                    for other_agent in self._agents.values():
+                    for other_agent in list(self._agents.values()):
                         if other_agent.agent_id != response.sender_id:
                             await other_agent.process_incoming_message(response)
 

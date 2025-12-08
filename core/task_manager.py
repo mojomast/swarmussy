@@ -48,6 +48,33 @@ class TaskManager:
         logger.info(f"Task created: {task_id} - {description[:50]}...")
         return task
     
+    def update_task_status(self, task_id: str, status: str, result: Optional[str] = None) -> Optional[Task]:
+        """Update the status (and optional result) of a task by ID.
+
+        Args:
+            task_id: ID of the task to update
+            status: New status as a string (pending, in_progress, completed, failed)
+            result: Optional result or error summary
+        """
+        if task_id not in self._tasks:
+            logger.error(f"Task not found: {task_id}")
+            return None
+        
+        try:
+            new_status = TaskStatus(status)
+        except ValueError:
+            logger.error(f"Invalid task status '{status}' for task {task_id}")
+            return None
+        
+        task = self._tasks[task_id]
+        task.status = new_status
+        if result is not None:
+            task.result = result
+        if new_status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+            task.completed_at = datetime.now().isoformat()
+        logger.info(f"Task {task_id} status updated to {new_status.value}")
+        return task
+    
     def assign_task(self, task_id: str, agent_id: str) -> Optional[Task]:
         """
         Assign a task to an agent.

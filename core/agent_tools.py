@@ -179,6 +179,22 @@ class AgentToolExecutor:
         except Exception as e:
             return False, Path(path), f"Invalid path: {str(e)}"
     
+    def _is_protected_planning_file(self, resolved: Path) -> bool:
+        """Return True if the resolved path points to a core planning file.
+
+        Currently this includes devplan.md and master_plan.md in the shared
+        scratch directory. Only the Architect is allowed to modify these.
+        """
+        try:
+            shared = self.scratch_dir / "shared"
+            protected = {
+                (shared / "devplan.md").resolve(),
+                (shared / "master_plan.md").resolve(),
+            }
+            return resolved.resolve() in protected
+        except Exception:
+            return False
+    
     async def execute_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         """
         Execute a tool with given arguments.
@@ -204,9 +220,13 @@ class AgentToolExecutor:
             "scaffold_project": self._scaffold_project,
             "get_project_structure": self._get_project_structure,
             "spawn_worker": self._spawn_worker,
+            "create_task": self._create_task,
             "assign_task": self._assign_task,
             "get_swarm_state": self._get_swarm_state,
             "update_devplan_dashboard": self._update_devplan_dashboard,
+            "update_task_status": self._update_task_status,
+            "append_decision_log": self._append_decision_log,
+            "append_team_log": self._append_team_log,
         }
         
         if tool_name not in tool_map:
@@ -272,6 +292,13 @@ class AgentToolExecutor:
         if await self.lock_manager.is_locked_by_other(str(resolved), self.agent_id):
             return {"success": False, "error": "File is locked by another agent. Use claim_file first."}
         
+        if self._is_protected_planning_file(resolved) and "Architect" not in self.agent_name:
+            return {
+                "success": False,
+                "error": "Only Bossy McArchitect can modify devplan.md or master_plan.md. "
+                         "Ask the Architect to adjust the plan/dashboard instead of editing directly.",
+            }
+        
         try:
             # Ensure parent directory exists
             resolved.parent.mkdir(parents=True, exist_ok=True)
@@ -307,6 +334,13 @@ class AgentToolExecutor:
         if await self.lock_manager.is_locked_by_other(str(resolved), self.agent_id):
             return {"success": False, "error": "File is locked by another agent"}
         
+        if self._is_protected_planning_file(resolved) and "Architect" not in self.agent_name:
+            return {
+                "success": False,
+                "error": "Only Bossy McArchitect can modify devplan.md or master_plan.md. "
+                         "Ask the Architect to adjust the plan/dashboard instead of editing directly.",
+            }
+        
         try:
             async with aiofiles.open(resolved, 'r', encoding='utf-8') as f:
                 lines = (await f.read()).split('\n')
@@ -341,6 +375,13 @@ class AgentToolExecutor:
         valid, resolved, error = self._validate_path(path)
         if not valid:
             return {"success": False, "error": error}
+
+        if self._is_protected_planning_file(resolved) and "Architect" not in self.agent_name:
+            return {
+                "success": False,
+                "error": "Only Bossy McArchitect can modify devplan.md or master_plan.md. "
+                         "Ask the Architect to adjust the plan/dashboard instead of editing directly.",
+            }
             
         if not resolved.exists():
             return {"success": False, "error": f"File not found: {path}"}
@@ -421,6 +462,13 @@ class AgentToolExecutor:
         # Check if locked by another agent
         if await self.lock_manager.is_locked_by_other(str(resolved), self.agent_id):
             return {"success": False, "error": "File is locked by another agent"}
+        
+        if self._is_protected_planning_file(resolved) and "Architect" not in self.agent_name:
+            return {
+                "success": False,
+                "error": "Only Bossy McArchitect can delete devplan.md or master_plan.md. "
+                         "Ask the Architect to adjust the plan/dashboard instead of deleting directly.",
+            }
         
         try:
             if resolved.is_file():
@@ -622,6 +670,34 @@ class AgentToolExecutor:
         task = tm.create_task(description)
         return {"success": True, "result": f"Task created: {task.id}"}
 
+    async def _update_task_status(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Update the status and optional result of an existing task.
+
+        Expected arguments:
+            task_id: ID of the task
+            status: One of "pending", "in_progress", "completed", "failed"
+            result: Optional result / error summary
+        """
+        task_id = args.get("task_id", "")
+        status = args.get("status", "")
+        result = args.get("result")
+
+        if not task_id:
+            return {"success": False, "error": "task_id is required"}
+        if not status:
+            return {"success": False, "error": "status is required"}
+
+        from core.task_manager import get_task_manager
+        tm = get_task_manager()
+        task = tm.update_task_status(task_id, status, result=result)
+        if not task:
+            return {"success": False, "error": f"Failed to update task {task_id}. Ensure the ID and status are valid."}
+
+        return {
+            "success": True,
+            "result": f"Task {task_id} updated to status '{task.status.value}'",
+        }
+
     async def _assign_task(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Assign a task to an agent."""
         agent_name = args.get("agent_name", "")
@@ -640,6 +716,93 @@ class AgentToolExecutor:
         if success:
             return {"success": True, "result": f"Assigned task to {agent_name}: {description[:50]}..."}
         return {"success": False, "error": f"Failed to assign task to {agent_name} - agent not found"}
+
+    async def _append_decision_log(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Append a structured entry to the shared decisions log.
+
+        Writes to scratch/shared/decisions.md, creating the file with a header
+        if it does not exist yet.
+        """
+        title = (args.get("title") or "").strip()
+        details = (args.get("details") or "").strip()
+
+        if not title and not details:
+            return {"success": False, "error": "title or details is required"}
+
+        path = "shared/decisions.md"
+
+        # Ensure the log file exists with a simple header
+        try:
+            valid, resolved, error = self._validate_path(path)
+            if not valid:
+                return {"success": False, "error": error}
+            if not resolved.exists():
+                header = "# Decision Log\n\nThis file records important technical and process decisions made by the swarm.\n\n"
+                create_result = await self._write_file({"path": path, "content": header})
+                if not create_result.get("success"):
+                    return {"success": False, "error": create_result.get("error", "Failed to create decisions.md")}
+        except Exception as e:
+            return {"success": False, "error": f"Failed to prepare decisions.md: {e}"}
+
+        timestamp = datetime.now().isoformat(timespec="seconds")
+        agent = self.agent_name or "Unknown"
+
+        lines: list[str] = []
+        lines.append(f"## {title or 'Decision'} ({timestamp})")
+        lines.append(f"- By: {agent}")
+        if details:
+            lines.append("")
+            lines.append(details)
+        lines.append("")
+
+        entry = "\n".join(lines) + "\n"
+
+        return await self._append_file({"path": path, "content": entry})
+
+    async def _append_team_log(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Append an event entry to the shared team log.
+
+        Writes to scratch/shared/team_log.md, which acts as a chronological
+        feed of notable swarm events that all agents can read.
+        """
+        summary = (args.get("summary") or "").strip()
+        category = (args.get("category") or "general").strip()
+        details = (args.get("details") or "").strip()
+
+        if not summary:
+            return {"success": False, "error": "summary is required"}
+
+        path = "shared/team_log.md"
+
+        # Ensure the log file exists with a header
+        try:
+            valid, resolved, error = self._validate_path(path)
+            if not valid:
+                return {"success": False, "error": error}
+            if not resolved.exists():
+                header = "# Team Event Log\n\nChronological log of notable swarm events, status changes, and handoffs.\n\n"
+                create_result = await self._write_file({"path": path, "content": header})
+                if not create_result.get("success"):
+                    return {"success": False, "error": create_result.get("error", "Failed to create team_log.md")}
+        except Exception as e:
+            return {"success": False, "error": f"Failed to prepare team_log.md: {e}"}
+
+        timestamp = datetime.now().isoformat(timespec="seconds")
+        agent = self.agent_name or "Unknown"
+
+        lines: list[str] = []
+        lines.append(f"## {timestamp} — {summary}")
+        lines.append(f"- By: {agent}")
+        if category:
+            lines.append(f"- Category: {category}")
+        if details:
+            lines.append("")
+            lines.append(details)
+        lines.append("")
+
+        entry = "\n".join(lines) + "\n"
+
+        return await self._append_file({"path": path, "content": entry})
 
     async def _get_swarm_state(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Get the state of all agents and tasks."""
@@ -661,7 +824,18 @@ class AgentToolExecutor:
         }
 
     async def _update_devplan_dashboard(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Generate and write a Markdown devplan dashboard from current swarm state."""
+        """Generate and write a *non-destructive* devplan dashboard from current swarm state.
+
+        Behavior:
+        - If scratch/shared/devplan.md exists, everything before the
+          ``<!-- LIVE_DASHBOARD_START -->`` marker is treated as the
+          canonical plan/scope and is preserved as-is.
+        - The section starting at that marker is fully regenerated from the
+          current agents and tasks and appended after the preserved scope.
+        - If the marker is not present, the entire existing devplan file is
+          treated as scope and left intact, with the live dashboard appended
+          to the end.
+        """
         from core.task_manager import get_task_manager
         from core.chatroom import get_chatroom
 
@@ -687,32 +861,34 @@ class AgentToolExecutor:
             owner = agents_by_id.get(t.assigned_to).name if t.assigned_to in agents_by_id else "Unassigned"
             tasks_by_agent.setdefault(owner, []).append(t)
 
-        # Build Markdown dashboard
-        lines: list[str] = []
-        lines.append("# DevPlan Dashboard")
-        lines.append("")
-        lines.append("## Overall Status")
-        lines.append("")
-        lines.append(f"- Active agents: {len(agents)}")
+        # Build the live dashboard section with a clear marker
+        dashboard_lines: list[str] = []
+        dashboard_lines.append("<!-- LIVE_DASHBOARD_START -->")
+        dashboard_lines.append("")
+        dashboard_lines.append("## Live Task Dashboard")
+        dashboard_lines.append("")
+        dashboard_lines.append("### Overall Status")
+        dashboard_lines.append("")
+        dashboard_lines.append(f"- Active agents: {len(agents)}")
         total_tasks = len(tasks)
-        lines.append(f"- Total tasks: {total_tasks}")
+        dashboard_lines.append(f"- Total tasks: {total_tasks}")
         if total_tasks:
-            lines.append(f"  - Pending: {status_counts['pending']}")
-            lines.append(f"  - In Progress: {status_counts['in_progress']}")
-            lines.append(f"  - Completed: {status_counts['completed']}")
-            lines.append(f"  - Failed: {status_counts['failed']}")
+            dashboard_lines.append(f"  - Pending: {status_counts['pending']}")
+            dashboard_lines.append(f"  - In Progress: {status_counts['in_progress']}")
+            dashboard_lines.append(f"  - Completed: {status_counts['completed']}")
+            dashboard_lines.append(f"  - Failed: {status_counts['failed']}")
 
-        lines.append("")
-        lines.append("## Tasks by Agent")
-        lines.append("")
+        dashboard_lines.append("")
+        dashboard_lines.append("### Tasks by Agent")
+        dashboard_lines.append("")
 
         if not tasks:
-            lines.append("No tasks have been created yet.")
+            dashboard_lines.append("No tasks have been created yet.")
         else:
             # Stable order: Architect and then others by name
             agent_names = sorted(tasks_by_agent.keys(), key=lambda n: ("Bossy McArchitect" not in n, n))
             for name in agent_names:
-                lines.append(f"### {name}")
+                dashboard_lines.append(f"#### {name}")
                 for t in tasks_by_agent[name]:
                     status = getattr(t.status, "value", str(t.status))
                     checked = "x" if status == "completed" else " "
@@ -721,23 +897,43 @@ class AgentToolExecutor:
                     desc = t.description.strip().replace("\n", " ")
                     if len(desc) > 120:
                         desc = desc[:117] + "..."
-                    lines.append(f"- [{checked}] {icon} ({short_id}) {desc}")
-                lines.append("")
+                    dashboard_lines.append(f"- [{checked}] {icon} ({short_id}) {desc}")
+                dashboard_lines.append("")
 
-        lines.append("## Blockers & Risks")
-        lines.append("")
+        dashboard_lines.append("### Blockers & Risks")
+        dashboard_lines.append("")
         blockers = [t for t in tasks if getattr(t.status, "value", str(t.status)) == "failed"]
         if not blockers:
-            lines.append("- None currently recorded. If something is blocked, describe it here so the human can help.")
+            dashboard_lines.append("- None currently recorded. If something is blocked, describe it here so the human can help.")
         else:
             for t in blockers:
                 short_id = t.id.split("-")[0]
                 desc = (t.result or t.description).strip().replace("\n", " ")
                 if len(desc) > 160:
                     desc = desc[:157] + "..."
-                lines.append(f"- ⚠️ ({short_id}) {desc}")
+                dashboard_lines.append(f"- ⚠️ ({short_id}) {desc}")
 
-        content = "\n".join(lines) + "\n"
+        dashboard_section = "\n".join(dashboard_lines).rstrip() + "\n"
+
+        # Preserve any existing devplan scope content before the marker
+        scope_prefix = ""
+        try:
+            existing = await self._read_file({"path": "shared/devplan.md"})
+            if existing.get("success"):
+                raw = existing["result"].get("content", "")
+                marker = "<!-- LIVE_DASHBOARD_START -->"
+                idx = raw.find(marker)
+                if idx != -1:
+                    scope_prefix = raw[:idx].rstrip()
+                else:
+                    scope_prefix = raw.rstrip()
+        except Exception:
+            scope_prefix = ""
+
+        if scope_prefix:
+            content = scope_prefix + "\n\n---\n\n" + dashboard_section
+        else:
+            content = dashboard_section
 
         # Write to shared/devplan.md
         write_result = await self._write_file({
@@ -774,6 +970,13 @@ class AgentToolExecutor:
         # Check if locked by another agent
         if await self.lock_manager.is_locked_by_other(str(resolved), self.agent_id):
             return {"success": False, "error": "File is locked by another agent."}
+        
+        if self._is_protected_planning_file(resolved) and "Architect" not in self.agent_name:
+            return {
+                "success": False,
+                "error": "Only Bossy McArchitect can modify devplan.md or master_plan.md. "
+                         "Ask the Architect to adjust the plan/dashboard instead of editing directly.",
+            }
         
         try:
             async with aiofiles.open(resolved, 'a', encoding='utf-8') as f:
@@ -1227,6 +1430,23 @@ TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
+            "name": "create_task",
+            "description": "Create a new task in the swarm task registry without assigning it yet. Returns the new task ID.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "description": {
+                        "type": "string",
+                        "description": "Detailed description of the task to be performed"
+                    }
+                },
+                "required": ["description"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "assign_task",
             "description": "Assign a task to a specific agent. This wakes them up and sets their status to WORKING.",
             "parameters": {
@@ -1242,6 +1462,32 @@ TOOL_DEFINITIONS = [
                     }
                 },
                 "required": ["agent_name", "description"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_task_status",
+            "description": "Update the status/result of an existing task by ID (pending, in_progress, completed, failed). Use this to keep the task registry and dashboard in sync.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task_id": {
+                        "type": "string",
+                        "description": "ID of the task to update"
+                    },
+                    "status": {
+                        "type": "string",
+                        "description": "New status: pending, in_progress, completed, or failed",
+                        "enum": ["pending", "in_progress", "completed", "failed"]
+                    },
+                    "result": {
+                        "type": "string",
+                        "description": "Optional result or error summary to record with the task"
+                    }
+                },
+                "required": ["task_id", "status"]
             }
         }
     },
@@ -1338,6 +1584,7 @@ TOOL_DEFINITIONS = [
 # Orchestrator-only tools (for Architect)
 ORCHESTRATOR_TOOL_NAMES = {
     "spawn_worker",
+    "create_task",
     "assign_task",
     "get_swarm_state",
     "read_file",
@@ -1381,9 +1628,12 @@ def get_tools_for_agent(agent_name: str) -> list:
     lowered = agent_name.lower()
     if "checky mcmanager" in lowered or "project_manager" in lowered:
         pm_tools = list(WORKER_TOOLS)
-        swarm_tool = next((t for t in TOOL_DEFINITIONS if t["function"]["name"] == "get_swarm_state"), None)
-        if swarm_tool and swarm_tool not in pm_tools:
-            pm_tools.append(swarm_tool)
+        # PM gets visibility into swarm state and can manage tasks,
+        # but does not spawn workers or assign tasks directly.
+        for tool_name in ["get_swarm_state", "create_task", "update_task_status"]:
+            tool_def = next((t for t in TOOL_DEFINITIONS if t["function"]["name"] == tool_name), None)
+            if tool_def and tool_def not in pm_tools:
+                pm_tools.append(tool_def)
         return pm_tools
     return WORKER_TOOLS
 

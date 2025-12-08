@@ -8,6 +8,7 @@ import asyncio
 import logging
 import sys
 import os
+import shutil
 from pathlib import Path
 from datetime import datetime
 from typing import List, Optional, Dict, Any
@@ -256,12 +257,31 @@ class AgentCard(Static):
         self.refresh_display()
 
     async def on_click(self, event):
-        """Toggle expanded/collapsed view for this agent card."""
+        """Handle clicks for expand/collapse and per-agent halt.
+
+        - Left click toggles expanded/collapsed view.
+        - Right click halts this agent's current work via the dashboard.
+        """
         # Stop event so parent containers don't also handle the click
         try:
             event.stop()
         except Exception:
             pass
+
+        button = getattr(event, "button", 1)
+
+        # Right-click: request halt for this agent
+        if button == 3:
+            try:
+                dashboard = self.app  # type: ignore[assignment]
+                # Halt this agent's current work (fire and forget)
+                import asyncio as _asyncio
+                _asyncio.create_task(dashboard.halt_agent(self.agent))
+            except Exception:
+                pass
+            return
+
+        # Left-click (or default): toggle expanded/collapsed
         self.expanded = not self.expanded
         self.refresh_display()
 
@@ -278,33 +298,46 @@ class AgentCard(Static):
             
         # Content construction
         content = Text()
-        
-        # Tokens
+
+        # Compact collapsed view: ~2 lines with tokens, action, task, latest
+        if not self.expanded:
+            action = (self.current_action or "Idle").replace("\n", " ")
+            action_short = action[:60]
+            task = getattr(self.agent, 'current_task_description', '') or "No task"
+            task_short = task.replace("\n", " ")[:40]
+            latest = self.accomplishments[-1] if self.accomplishments else ""
+            latest_short = latest.replace("\n", " ")[:30]
+
+            line1 = f"T:{self.tokens_used:,} | {action_short}"
+            line2 = f"Task: {task_short}"
+            if latest_short:
+                line2 = f"{line2} | {latest_short}"
+
+            content.append(line1 + "\n", style="dim")
+            content.append(line2, style="yellow")
+
+            self.update(Panel(content, title=title, border_style=border_style))
+            return
+
+        # Expanded view: detailed layout (tokens, full action, task, latest list)
         content.append(f"Tokens: {self.tokens_used:,}\n", style="dim")
-        
-        # Current Action (Granular)
+
         if self.current_action:
             content.append(f"Action: {self.current_action}\n", style="bold cyan")
-        
-        # Task
+
         task = getattr(self.agent, 'current_task_description', '')
         content.append("\nTask:\n", style="bold yellow")
         if task:
             content.append(f"{task}\n")
         else:
             content.append("No task assigned\n", style="dim")
-        
-        # Accomplishments
+
         if self.accomplishments:
             content.append("\nLatest:\n", style="bold white")
-            if self.expanded:
-                items = self.accomplishments[-self._max_history:]
-            else:
-                items = self.accomplishments[-3:]
+            items = self.accomplishments[-self._max_history:]
             for acc in items:
                 content.append(f"✓ {acc}\n", style="green")
-        
-        # Update with a panel
+
         self.update(Panel(content, title=title, border_style=border_style))
 
 
@@ -744,6 +777,8 @@ class SwarmDashboard(App):
         self.agents = []
         self.agent_cards: Dict[str, AgentCard] = {}
         self.is_processing = False
+        # Set when a synthetic Auto Orchestrator message is injected to nudge Bossy/Checky
+        self.auto_orchestrator_pending: bool = False
 
     def update_status_line(self):
         status_map = {
@@ -834,6 +869,8 @@ class SwarmDashboard(App):
         self.query_one("#chat-input", Input).focus()
         await self.init_chatroom()
         self.set_interval(3.0, self.refresh_panels)
+        # Periodically advance the swarm when auto_chat is enabled
+        self.set_interval(5.0, self.auto_chat_tick)
 
     async def init_chatroom(self):
         settings = get_settings()
@@ -982,7 +1019,6 @@ class SwarmDashboard(App):
                 parts = content.replace("🔧 ", "").split(": ", 1)
                 if len(parts) == 2:
                     agent_name, action = parts[0], parts[1]
-                    self.on_tool_call(agent_name, action)
                     # Update granular status
                     for card in self.agent_cards.values():
                         if agent_name in card.agent.name:
@@ -1022,6 +1058,13 @@ class SwarmDashboard(App):
                             break
             return
 
+        # Track synthetic auto-orchestration prompts as human messages
+        if (
+            message.role == MessageRole.HUMAN
+            and message.sender_id == "auto_orchestrator"
+        ):
+            self.auto_orchestrator_pending = True
+
         timestamp = message.timestamp.strftime("%H:%M")
         icon = AGENT_ICONS.get(message.sender_name, "🤖")
 
@@ -1055,6 +1098,43 @@ class SwarmDashboard(App):
                     self.agent_cards[agent.agent_id].refresh_display()
 
 
+    def auto_chat_tick(self):
+        """Background tick to keep the swarm moving when auto_chat is enabled.
+
+        This lets Checky McManager update status/devplan and Bossy McArchitect
+        hand out fresh tasks once workers finish, without manual user prompts.
+        """
+        from core.settings_manager import get_settings
+        settings = get_settings()
+
+        # Respect user preference
+        if not settings.get("auto_chat", True):
+            return
+
+        # Don't overlap with an in-flight round
+        if self.is_processing or not self.chatroom:
+            return
+
+        try:
+            from core.task_manager import get_task_manager
+            tm = get_task_manager()
+            tasks = tm.get_all_tasks()
+        except Exception:
+            tasks = []
+
+        has_open = any(t.status.value in ("pending", "in_progress") for t in tasks)
+
+        # Run when there is active work, or when an auto-orchestrator prompt
+        # is waiting to be handled and we have at least one task recorded.
+        if not has_open and not (self.auto_orchestrator_pending and tasks):
+            return
+
+        # Kick off another conversation round; @work(exclusive=True) prevents
+        # overlapping runs.
+        self.is_processing = True
+        self.run_conversation()
+
+
     # ─────────────────────────────────────────────────────────────────────────
     # INPUT & COMMANDS
     # ─────────────────────────────────────────────────────────────────────────
@@ -1081,6 +1161,8 @@ class SwarmDashboard(App):
             await self.chatroom.run_conversation_round()
         finally:
             self.is_processing = False
+            # Any pending auto-orchestrator hint has now been handled
+            self.auto_orchestrator_pending = False
             self.refresh_panels()
 
     async def handle_command(self, line: str):
@@ -1102,6 +1184,7 @@ class SwarmDashboard(App):
             self.chat_log.write(Text("  /status   - Show status", style="dim"))
             self.chat_log.write(Text("  /clear    - Clear chat", style="dim"))
             self.chat_log.write(Text("  /fix <reason> - Stop & request fix", style="dim"))
+            self.chat_log.write(Text("  /snapshot - Snapshot current project folder", style="dim"))
             self.chat_log.write(Text("─" * 50, style="dim"))
             self.chat_log.write(Text(f"Roles: {', '.join(AGENT_CLASSES.keys())}", style="dim"))
         elif cmd == "/settings":
@@ -1129,6 +1212,10 @@ class SwarmDashboard(App):
                     self.chat_log.write(Text(f"{icon} {agent.name} joined!", style="green"))
             else:
                 self.chat_log.write(Text(f"Usage: /spawn <role>", style="yellow"))
+        elif cmd == "/model":
+            await self.action_model(arg)
+        elif cmd == "/snapshot":
+            await self.action_snapshot(arg)
         elif cmd == "/clear":
             self.chat_log.clear()
         elif cmd == "/fix":
@@ -1187,6 +1274,144 @@ class SwarmDashboard(App):
     @on(Button.Pressed, "#stop-btn")
     async def on_stop_button(self):
         await self.action_stop_current()
+
+    async def action_snapshot(self, label: str = ""):
+        """Create a snapshot of the current project folder.
+
+        Copies the entire contents of the project's root folder into a
+        timestamped directory under a shared "snapshots" folder located in
+        the parent of the project root (sibling to all project folders).
+        """
+        try:
+            project_root: Path = self.project.root
+            projects_parent = project_root.parent
+
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            safe_label = "".join(c if c.isalnum() or c in "-_" else "_" for c in label).strip("_")
+            suffix = f"_{safe_label}" if safe_label else ""
+
+            snapshots_root = projects_parent / "snapshots"
+            dest = snapshots_root / f"{self.project.name}{suffix}_{ts}"
+
+            snapshots_root.mkdir(parents=True, exist_ok=True)
+
+            if dest.exists():
+                self.chat_log.write(Text(f"❌ Snapshot path already exists: {dest}", style="red"))
+                return
+
+            self.chat_log.write(Text(f"🗂️ Creating snapshot at {dest} ...", style="dim"))
+
+            # Run copytree in a background thread to avoid blocking the UI
+            await asyncio.to_thread(shutil.copytree, project_root, dest)
+
+            self.chat_log.write(Text("✅ Snapshot created", style="green"))
+        except Exception as e:
+            self.chat_log.write(Text(f"❌ Snapshot failed: {e}", style="red"))
+
+    async def action_model(self, arg: str):
+        """View or change per-agent models.
+
+        Usage:
+          /model                      - list agents and their models
+          /model <agent> <model>      - set model for a specific agent
+
+        <agent> can be the full name ("Codey McBackend") or a case-insensitive
+        prefix. <model> must be one of AVAILABLE_MODELS.
+        """
+        agents = list(self.chatroom._agents.values()) if self.chatroom else []
+        if not agents:
+            self.chat_log.write(Text("No agents are active yet.", style="yellow"))
+            return
+
+        from core.settings_manager import get_settings
+        settings = get_settings()
+
+        if not arg:
+            # List current models
+            self.chat_log.write(Text("─" * 50, style="dim"))
+            self.chat_log.write(Text("AGENT MODELS:", style="yellow bold"))
+            for a in agents:
+                self.chat_log.write(Text(f"  {a.name}: {a.model}", style="dim"))
+            self.chat_log.write(Text("Available:", style="yellow"))
+            for m in AVAILABLE_MODELS:
+                self.chat_log.write(Text(f"  - {m}", style="dim"))
+            self.chat_log.write(Text("Usage: /model <agent> <model>", style="dim"))
+            self.chat_log.write(Text("─" * 50, style="dim"))
+            return
+
+        # Parse "agent model" using rsplit so agent names may contain spaces
+        try:
+            agent_spec, model_spec = arg.rsplit(maxsplit=1)
+        except ValueError:
+            self.chat_log.write(Text("Usage: /model <agent> <model>", style="yellow"))
+            return
+
+        agent_spec = agent_spec.strip()
+        model_spec = model_spec.strip()
+
+        if model_spec not in AVAILABLE_MODELS:
+            self.chat_log.write(Text(f"Unknown model: {model_spec}", style="red"))
+            self.chat_log.write(Text("Available models:", style="yellow"))
+            for m in AVAILABLE_MODELS:
+                self.chat_log.write(Text(f"  - {m}", style="dim"))
+            return
+
+        # Find matching agent (exact name or prefix, case-insensitive)
+        target = None
+        agent_spec_lower = agent_spec.lower()
+        for a in agents:
+            name_lower = a.name.lower()
+            if name_lower == agent_spec_lower or name_lower.startswith(agent_spec_lower):
+                target = a
+                break
+
+        if not target:
+            self.chat_log.write(Text(f"Agent not found for spec: {agent_spec}", style="red"))
+            self.chat_log.write(Text("Active agents:", style="yellow"))
+            for a in agents:
+                self.chat_log.write(Text(f"  - {a.name}", style="dim"))
+            return
+
+        # Apply override in-memory
+        old_model = target.model
+        target.model = model_spec
+
+        # Persist override in settings
+        agent_models = settings.get("agent_models", {}) or {}
+        agent_models[target.name] = model_spec
+        settings.set("agent_models", agent_models)
+
+        self.chat_log.write(Text(f"🧠 Model for {target.name} changed from {old_model} to {model_spec}", style="green"))
+
+    async def halt_agent(self, agent):
+        """Halt a specific agent's current work and prompt the Architect to adjust.
+
+        This is invoked from AgentCard via right-click. It marks any of the
+        agent's in-progress tasks as failed and injects a human message asking
+        Bossy McArchitect to respond to why the user stopped this worker.
+        """
+        try:
+            from core.task_manager import get_task_manager
+            tm = get_task_manager()
+            halted = 0
+            for task in tm.get_all_tasks():
+                if task.assigned_to == agent.agent_id and task.status.value == "in_progress":
+                    tm.update_task_status(task.id, "failed", result="Stopped by user via dashboard")
+                    halted += 1
+
+            reason = f"I just halted {agent.name}'s current work in the dashboard. Please briefly explain what they were doing, whether anything needs to be rolled back, and then adjust the devplan/tasks accordingly."
+            await self.chatroom.add_human_message(
+                content=reason,
+                username=self.username,
+                user_id="dashboard_user",
+            )
+            self.is_processing = True
+            self.run_conversation()
+
+            msg = f"⏹ Halt requested for {agent.name} ({halted} task(s) marked failed)."
+            self.chat_log.write(Text(msg, style="yellow"))
+        except Exception as e:
+            self.chat_log.write(Text(f"⚠️ Failed to halt {agent.name}: {e}", style="red"))
 
     async def action_quit(self):
         # Stop Traffic Control relay

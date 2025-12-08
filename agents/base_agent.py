@@ -85,6 +85,7 @@ class BaseAgent(ABC):
         # Orchestration State
         self.status = AgentStatus.IDLE
         self.current_task_id: Optional[str] = None
+        self.current_task_description: str = ""
         
         # Short-term memory: recent messages
         self._short_term_memory: List[Message] = []
@@ -707,7 +708,27 @@ Keep chat responses concise and focused on the task. Use the tools for the heavy
             task_manager.complete_task(self.current_task_id, result=response_text)
             self.status = AgentStatus.IDLE
             self.current_task_id = None
+            self.current_task_description = ""
             logger.info(f"Agent {self.name} completed task and is now IDLE")
+
+            # If this was the last open task, nudge Checky/Bossy to plan next work
+            try:
+                all_tasks = task_manager.get_all_tasks()
+                has_open = any(t.status in (TaskStatus.PENDING, TaskStatus.IN_PROGRESS) for t in all_tasks)
+                if not has_open and all_tasks:
+                    from core.chatroom import get_chatroom
+                    chatroom = await get_chatroom()
+                    await chatroom.add_human_message(
+                        content=(
+                            "All current swarm tasks are finished. "
+                            "Checky McManager: refresh status reports and make sure the devplan/dashboard reflect the latest work. "
+                            "Bossy McArchitect: review the updated devplan and assign the next concrete batch of tasks so development keeps moving without human prompts."
+                        ),
+                        username="Auto Orchestrator",
+                        user_id="auto_orchestrator",
+                    )
+            except Exception as e:
+                logger.warning(f"[{self.name}] Failed to enqueue auto-orchestration message: {e}")
         
         return msg
     

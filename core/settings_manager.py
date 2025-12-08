@@ -24,6 +24,7 @@ DEFAULT_SETTINGS = {
     "default_model": "openai/gpt-5-nano",
     "architect_model": "openai/gpt-5-nano",
     "swarm_model": "openai/gpt-5-nano",
+    "agent_models": {},  # Optional per-agent model overrides keyed by agent name
     "disabled_agents": [],
     "theme": "dark",
     "max_tokens": 100000,

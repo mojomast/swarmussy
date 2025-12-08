@@ -429,3 +429,46 @@ Added verbose API request/response logging in the TUI:
 ---
 *Last updated: December 6, 2025*
 *Status: DevPlan dashboard + Checky PM online, parallel swarm execution, richer TUI agent visibility, deeper tool chains enabled*
+
+---
+
+## Latest Updates (December 7, 2025 - DevPlan Ownership, Logs, Models, Snapshots)
+
+### 1. DevPlan Ownership Guard
+
+- Added protected-file handling in `core/agent_tools.py` so only **Bossy McArchitect** can modify `scratch/shared/devplan.md` and `scratch/shared/master_plan.md`.
+- Non‑Architect agents can still read these files, but any attempt to write/edit/append/replace/delete/move them returns a clear tool error instructing the agent to describe the desired change and ask Bossy to update the devplan/dashboard.
+
+### 2. Decision & Team Logs
+
+- New tools in `AgentToolExecutor`:
+  - `append_decision_log(title, details)` → appends structured entries to `scratch/shared/decisions.md`.
+  - `append_team_log(summary, category?, details?)` → appends chronological event entries to `scratch/shared/team_log.md`.
+- All agents can use these to record important design decisions, milestones, blockers, and handoffs.
+
+### 3. Per-Agent Halt from TUI
+
+- `dashboard_tui.py::AgentCard` now supports:
+  - Left‑click → expand/collapse card (compact 2‑line view vs. full history).
+  - **Right‑click** → calls `SwarmDashboard.halt_agent(agent)`.
+- `halt_agent`:
+  - Marks any `in_progress` tasks assigned to that agent as `failed` with result "Stopped by user via dashboard".
+  - Injects a human message asking Bossy to explain what the worker was doing, roll back if needed, and adjust the devplan/tasks accordingly.
+
+### 4. Project Snapshots via `/snapshot`
+
+- New TUI command `/snapshot [label]` in `dashboard_tui.py`:
+  - Copies the current project root (e.g. `projects/doom_clone/`) into a timestamped directory under `projects/snapshots/`.
+  - Runs `shutil.copytree` via `asyncio.to_thread` so the UI stays responsive.
+  - Logs progress and success/failure in the chat.
+
+### 5. Per-Agent Model Overrides via `/model`
+
+- Added `agent_models` mapping to `core/settings_manager.DEFAULT_SETTINGS` for persistent per‑agent overrides.
+- New TUI command `/model` in `dashboard_tui.py`:
+  - `/model` → lists all active agents and their current models, plus available models.
+  - `/model <agent> <model>` → updates a specific agent's `model` field in memory and persists the override to `agent_models`.
+  - Agent resolution is case‑insensitive and supports prefixes (e.g. `/model codey openai/gpt-4o-mini`).
+
+*Last updated: December 7, 2025*
+*Status: DevPlan ownership enforced, shared logs online, per-agent models and snapshots available for testing*
