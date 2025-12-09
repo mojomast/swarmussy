@@ -1,5 +1,0 @@
-version: '3.8'
-services:
-  level-api:
-    environment:
-      - API_BASE_URL=${API_BASE_URL}

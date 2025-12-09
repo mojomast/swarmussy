@@ -1,9 +1,0 @@
-:root{--bg:#0e111a;--card:#1f2a44;--text:#e5e7eb;--accent:#4f86f7}
-*{box-sizing:border-box}
-html,body{margin:0;height:100%;font-family:Arial,Helvetica,sans-serif;background:#0b0f1a;color:#e5e7eb}
-.dashboard{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:16px;padding:16px}
-.card{background:var(--card);border-radius:12px;padding:16px;box-shadow:0 4px 14px rgba(0,0,0,.15)}
-.card h3{margin:0 0 8px 0;font-size:14px;letter-spacing:.4px;text-transform:uppercase}
-.card .value{font-size:28px;font-weight:bold}
-.progress{height:8px;background:#334; border-radius:8px;overflow:hidden}
-.progress > span{display:block;height:100%;background:var(--accent);width:40%}

@@ -1,1 +1,0 @@
-Phase 2 scaffolded. Endpoints: /v2/editor/level, /v2/engine/render_stats, /v2/events/stream. UI: Phase2Flow.jsx, Phase2Dashboard.jsx, Phase2Editor.jsx. Ensure accessibility and keyboard shortcuts. Tests include UI presence.

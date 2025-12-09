@@ -1,7 +1,0 @@
-html, body, #root { height: 100%; margin: 0; font-family: Arial, sans-serif; }
-.app-shell { display: flex; flex-direction: column; min-height: 100%; }
-.app-header { background: #111; color: #fff; padding: 1rem; text-align: center; }
-.app-content { padding: 1rem; display: flex; flex-direction: column; align-items: center; }
-.game-area { display: flex; flex-direction: column; align-items: center; }
-.status { margin-top: 8px; }
-button { margin-top: 8px; padding: 0.5rem 1rem; }

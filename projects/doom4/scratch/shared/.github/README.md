@@ -1,1 +1,0 @@
-This folder contains GitHub Actions workflows for API contract tests and CI pipelines.

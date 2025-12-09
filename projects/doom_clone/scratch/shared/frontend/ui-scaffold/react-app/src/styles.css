@@ -1,6 +1,0 @@
-:root{--bg:#f6f8fa;--card:#fff;--accent:#4f46e5;}
-*{box-sizing:border-box} html,body,#root{height:100%} body{margin:0;font-family:system-ui, -apple-system, Segoe UI; background:var(--bg);}
-.app-shell{ padding:24px; display:flex; flex-direction:column; gap:12px; }
-.grid{ display:grid; gap:6px; background:#e5e7eb; padding:6px; border-radius:8px; }
-.cell{ width:100%; height:40px; border:1px solid #ddd; border-radius:6px; background:white; }
-.cell.filled{ background:#2563eb; }

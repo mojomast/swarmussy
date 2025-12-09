@@ -1,1 +1,0 @@
-Infrastructure for staging deployment using Terraform. This repo contains a minimal placeholder for AWS EKS-based staging. Replace with real VPC/subnet IDs, cluster endpoint, and credentials before applying.

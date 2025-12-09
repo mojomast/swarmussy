@@ -1,1 +1,0 @@
-Educational Anatomy Prompt Generator API docs. See scratch/shared/docs/api_prompt_gen.md for API surface.

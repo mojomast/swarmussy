@@ -1,1 +1,0 @@
-Backend monolith scaffold with per-service modules and middleware-based JWT auth binding.

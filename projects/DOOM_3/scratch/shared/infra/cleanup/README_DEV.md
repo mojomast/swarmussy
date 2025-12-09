@@ -1,1 +1,0 @@
-Local development guide for Cleanup API with Docker Compose and Postgres.

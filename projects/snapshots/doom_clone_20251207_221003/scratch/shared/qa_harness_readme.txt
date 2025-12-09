@@ -1,1 +1,0 @@
-This is a placeholder readme to ensure write access in tests.

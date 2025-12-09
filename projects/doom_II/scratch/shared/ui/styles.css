@@ -1,6 +1,0 @@
-/* Minimal UI styles for HUD and canvas page */
-:root { --bg: #0b1020; --fg: #eaeef7; }
-* { box-sizing: border-box; }
-html, body, #root { height: 100%; margin: 0; }
-body { margin: 0; background: #0b1020; color: #eaeef7; font-family: system-ui, -apple-system, Segoe UI, Roboto; }
-.hud { position: absolute; top: 8px; left: 8px; }

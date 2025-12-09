@@ -1,1 +1,0 @@
-# MVP ECS Playground

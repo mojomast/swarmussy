@@ -1,3 +1,0 @@
-/* Local styles for grid layout in the scaffold app (JSX variant) */
-.grid{ display:grid; grid-template-columns: repeat(auto-fill, 28px); gap:6px; padding:8px; }
-.cell{ width:28px; height:28px; border:1px solid #aaa; border-radius:4px; display:inline-flex; align-items:center; justify-content:center; }

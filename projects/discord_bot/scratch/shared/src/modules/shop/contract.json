@@ -1,6 +1,0 @@
-{
-  "module": "shop",
-  "endpoints": {
-    "items": {"method": "GET", "path": "/items", "response": {"items": "array"}}
-  }
-}

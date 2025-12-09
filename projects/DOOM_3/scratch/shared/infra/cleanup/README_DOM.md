@@ -1,1 +1,0 @@
-Documentation placeholder for Cleanup domain.

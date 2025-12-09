@@ -1,1 +1,0 @@
-QA plans directory for engine integration tests.

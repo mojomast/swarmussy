@@ -1,1 +1,0 @@
-# Root package for shared Phase 2 scaffolding

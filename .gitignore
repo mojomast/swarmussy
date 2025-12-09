@@ -135,6 +135,6 @@ Thumbs.db
 
 # Local data (if needed for temporary testing)
 # logs/
-# But keep scratch and projects directories:
-# !scratch/
-# !projects/
+
+# Per-project workspaces (not versioned)
+projects/

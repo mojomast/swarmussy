@@ -1,9 +1,0 @@
-{
-  "endpoint": "/api/engine/state",
-  "method": "GET",
-  "description": "Prototype endpoint returning current engine state including started and tick. This is a placeholder for future backend wiring.",
-  "response": {
-    "started": true,
-    "tick": 42
-  }
-}

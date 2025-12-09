@@ -1,7 +1,0 @@
-replicaCount: 2
-image:
-  repository: cleanup/api
-  tag: latest
-service:
-  type: ClusterIP
-  port: 8080

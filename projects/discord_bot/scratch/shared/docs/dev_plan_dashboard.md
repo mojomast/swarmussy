@@ -1,1 +1,0 @@
-- Dashboard to show service health, auth status, etc.

@@ -1,1 +1,0 @@
-OpenAPI draft for JokeGen. This folder hosts jokegen.yaml and examples.

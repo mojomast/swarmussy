@@ -1,1 +1,0 @@
-Shared infra scaffolding for editor API prototype and API tests.

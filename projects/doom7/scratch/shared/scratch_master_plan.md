@@ -1,1 +1,0 @@
-# scratch master plan placeholder

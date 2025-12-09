@@ -1,9 +1,0 @@
-{
-  "name": "node-backend",
-  "version": "1.0.0",
-  "type": "commonjs",
-  "scripts": {
-    "test": "node test/run_node_tests.js"
-  },
-  "devDependencies": {}
-}

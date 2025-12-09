@@ -1,8 +1,0 @@
-{
-  "name": "backend-skeleton",
-  "version": "0.1.0",
-  "type": "module",
-  "scripts": {
-    "test": "node --input-type=module -e \"require('fs').readFileSync(0, 'utf8');\" && echo ok"
-  }
-}

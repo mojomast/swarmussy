@@ -1,1 +1,0 @@
-Kubernetes manifests scaffolding (prototype).
