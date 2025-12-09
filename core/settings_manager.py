@@ -42,6 +42,13 @@ DEFAULT_SETTINGS = {
     # Tool identifier for API headers (to spoof as different tools)
     "tool_identifier": "swarm",  # swarm | claude-code | cursor | windsurf | aider | continue | custom
     "custom_tool_id": "",  # Custom tool ID when tool_identifier is "custom"
+    # EFFICIENCY MODE - Reduces input tokens by ~80%
+    "efficient_mode": True,  # Use slim tools & lean prompts for better token ratio
+    "context_messages": 5,   # Number of history messages to include (was 10)
+    "skip_memory_context": True,  # Skip long-term memory in context (saves tokens)
+    # DEVUSSY MODE - Architect follows devplan strictly, no project decisions
+    "devussy_mode": False,  # When True, Architect follows devplan.md phases exactly
+    "devussy_model": "anthropic/claude-sonnet-4-20250514",  # Model for devussy pipeline planning
 }
 
 SETTINGS_FILE = Path(__file__).parent.parent / "data" / "settings.json"

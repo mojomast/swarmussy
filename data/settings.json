@@ -22,9 +22,14 @@
   "temperature": 0.8,
   "thinking_tokens": 50000,
   "max_tool_depth": 100,
-  "load_previous_history": true,
-  "api_base_url": "",
-  "api_key": "",
+  "load_previous_history": false,
+  "api_base_url": "https://router.requesty.ai/v1/chat/completions",
+  "api_key": "rqsty-sk-ZgPAXqJ5TXqGaUMt4pVahufNXkLf+Jy9juTKxL8CvszELl8WLyD0ONY6McoOG7PniJqOD+7hUWFltUGadqY+U+l6EYI4WmKgyZSEQGGeGQY=",
   "tool_identifier": "swarm",
-  "custom_tool_id": ""
+  "custom_tool_id": "",
+  "efficient_mode": true,
+  "context_messages": 5,
+  "skip_memory_context": true,
+  "devussy_mode": true,
+  "devussy_model": "openai/gpt-5-mini"
 }

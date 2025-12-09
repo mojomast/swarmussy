@@ -9,8 +9,10 @@ A multi-agent AI development system where specialized AI agents collaborate to b
 
 - **11 Specialized AI Agents** - Architect plus 10 specialists (backend, frontend, QA, DevOps, PM, Tech Writer, DB specialist, API designer, code reviewer, research)
 - **True Orchestration** - Architect delegates, workers execute (no micromanagement). Only the Architect speaks directly to you; worker agents report status and results back to the Architect.
+- **One-Task-Per-Worker Enforcement** - Task assignment pipeline ensures each worker has at most one active task; new assignments are rejected with a clear status message until `complete_my_task()` is called.
 - **Role-Based Tools** - Architect + Project Manager get orchestration tools, workers get coding tools
 - **Live DevPlan + Dashboard Pair**  - `scratch/shared/devplan.md` is the Architect's internal tracker; `scratch/shared/dashboard.md` is an auto-generated, user-facing view of in-progress work, what's next, and blockers
+- **Devussy DevPlan Integration (Optional)** - Generate swarm-ready devplans, phase files, and task queues, then safely resume partially-completed phases using the Architect's resume logic and dashboard recovery helpers.
 - **Rich Terminal Dashboard** - Real-time view of agents, tasks, tokens, tools, and activity
 - **Persistent Settings** - Preferences saved between sessions
 - **Multi-Project Support** - Isolated workspaces for each project
@@ -133,14 +135,15 @@ The Textual TUI (`--tui`) features a 3-column layout:
 - Scrollable AGENTS panel for large swarms (`Ctrl+A` to focus, then `Ctrl+Up` / `Ctrl+Down` to scroll when many agents are present)
 
 **Center Column:**
-- Main chat log with word-wrapped messages
-- Input box for commands and messages
+- A collapsible **In-Flight Requests** bar at the top (up to ~1/3 of the center column), showing current API calls; each entry is clickable to expand details.
+- Main chat log with word-wrapped messages beneath the in-flight section
+- Input box for commands and messages at the bottom
 
 **Right Column:**
 - Token usage panel (totals and per-agent breakdown)
 - Tool calls panel (real-time tool activity)
 - DevPlan panel (user-facing `dashboard.md`; the Architect-only `devplan.md` and `master_plan.md` live alongside it in `scratch/shared/`)
-- API Log panel with pinned in-flight requests at the top and a scrollable history below, each entry supporting multi-level expansion (collapsed > summary > full details)
+- A collapsible **API History** panel anchored to the bottom-right, taking roughly one-third of the right column height and listing completed/error API calls with multi-level expansion (collapsed → summary → full request/response + tool calls)
 - `📁 FILES` button and `Ctrl+F` shortcut open a floating file browser with project tree and read-only file preview
 
 ## API Activity Pulse (TUI)

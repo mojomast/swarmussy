@@ -242,6 +242,7 @@ class AgentToolExecutor:
             "get_context_summary": self._get_context_summary,
             "delegate_subtask": self._delegate_subtask,
             "get_recent_changes": self._get_recent_changes,
+            "log_context": self._log_context,
         }
         
         if tool_name not in tool_map:
@@ -1323,6 +1324,19 @@ class AgentToolExecutor:
 
         logger.info(f"[{self.agent_name}] Completed task {task_id} via complete_my_task tool")
 
+        # BROADCAST COMPLETION SUMMARY so it's always visible in chat
+        summary_preview = result_summary[:200] if result_summary else "Task completed"
+        if len(result_summary) > 200:
+            summary_preview += "..."
+        completion_msg = Message(
+            content=f"✅ **Task Complete** by {self.agent_name}: {summary_preview}",
+            sender_name="System",
+            sender_id="system",
+            role=MessageRole.SYSTEM,
+            message_type=MessageType.SYSTEM_NOTICE
+        )
+        await chatroom._broadcast_message(completion_msg)
+
         # Check if all tasks are done and trigger auto-resume
         all_tasks = tm.get_all_tasks()
         open_tasks = [t for t in all_tasks if t.status in (TaskStatus.PENDING, TaskStatus.IN_PROGRESS)]
@@ -1816,6 +1830,29 @@ class AgentToolExecutor:
             }
         }
 
+    async def _log_context(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Log key decision/progress to shared context file.
+        
+        This is a lightweight replacement for the database memory system.
+        """
+        entry = (args.get("entry") or "").strip()
+        category = args.get("category", "note")
+        
+        if not entry:
+            return {"success": False, "error": "entry is required"}
+        
+        from core.shared_context import append_context
+        
+        success = await append_context(entry, category.upper())
+        
+        if success:
+            return {
+                "success": True,
+                "result": f"Logged to shared context: [{category}] {entry[:50]}..."
+            }
+        else:
+            return {"success": False, "error": "Failed to write to context file"}
+
     async def _get_recent_changes(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Get a summary of recent file changes in the workspace.
         
@@ -2061,7 +2098,7 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "write_file",
-            "description": "Create or overwrite a file with new content. You MUST provide the COMPLETE file content. Do not use placeholders like '# ... rest of code ...' or truncate code. The file must be fully functional.",
+            "description": "OVERWRITES entire file with new content. WARNING: This erases existing content! If updating an existing file, READ IT FIRST to preserve content. Provide COMPLETE file content - no placeholders.",
             "parameters": {
                 "type": "object",
                 "properties": {

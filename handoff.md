@@ -864,3 +864,445 @@ create_checkpoint(
 
 *Last updated: December 8, 2025 (new agents & collaboration update)*
 *Status: 10 specialist agents, collaboration/context tools, enhanced worker prompts*
+
+---
+
+## Latest Updates (December 8, 2025 - Efficiency Mode Overhaul)
+
+### Problem
+Token usage was extremely inefficient:
+- **Input: 76M tokens** vs **Output: 3M tokens** (25:1 ratio)
+- 3,258 API calls producing mostly stubs and placeholders
+- Agents wasting calls on verbose context instead of actual code
+
+### Solution: EFFICIENT_MODE (Default ON)
+
+New settings in `data/settings.json`:
+```json
+{
+    "efficient_mode": true,
+    "context_messages": 5,
+    "skip_memory_context": true
+}
+```
+
+### Key Changes
+
+#### 1. Slim Tool Definitions (`core/slim_tools.py`)
+- **Before**: 33 verbose tools (~15k tokens per call)
+- **After**: 12 essential tools (~3k tokens per call)
+- **Savings**: ~80% reduction in tool definition overhead
+
+#### 2. Lean Agent Prompts (`agents/lean_prompts.py`)
+- **Before**: ~1000-1500 tokens per prompt
+- **After**: ~300-400 tokens per prompt
+- **Savings**: ~70% reduction
+
+#### 3. Minimal Context Building (`agents/base_agent.py`)
+- History messages: 5 instead of 10
+- Worker context: Only task + last human message
+- Memory context: Skipped (uses file-based context instead)
+
+#### 4. File-Based Memory (`core/shared_context.py`)
+- **File**: `shared/context.md`
+- **Tool**: `log_context(entry, category)`
+- Replaces database memory with simple markdown
+
+#### 5. Simplified Orchestration
+- Removed QA gate requirements
+- PM just tracks progress, doesn't block
+- Focus on building, not process
+
+### Expected Results
+- **Input tokens**: ~80% reduction per call
+- **Target ratio**: 5:1 or better (vs 25:1 before)
+
+### Files Changed
+
+| File | Changes |
+|------|---------|
+| `core/slim_tools.py` | NEW: Compressed tool definitions |
+| `core/shared_context.py` | NEW: File-based memory |
+| `agents/lean_prompts.py` | NEW: Terse prompts |
+| `core/settings_manager.py` | Added efficient_mode settings |
+| `agents/base_agent.py` | Use slim tools when efficient |
+| All agent files | Use lean prompts |
+
+*Last updated: December 8, 2025 (efficiency overhaul)*
+*Status: EFFICIENT_MODE enabled by default, ~80% token reduction expected*
+
+---
+
+## Latest Updates (December 8, 2025 - Devussy Pipeline Integration)
+
+### Problem
+The Architect was both designing projects AND delegating work. This led to:
+- Inconsistent project scoping
+- Architect making up features on the fly
+- No structured development phases
+- Work not following a coherent plan
+
+### Solution: Devussy Pipeline Integration
+
+Devussy is now integrated as an optional pre-swarm planning phase. When enabled:
+1. User goes through an LLM-guided interview about their project
+2. Devussy generates `devplan.md` and `phases.md` with structured tasks
+3. The swarm executes the plan phase by phase
+4. The Architect becomes a pure delegator - no project decisions
+
+### How It Works
+
+#### Startup Flow
+```
+1. Start app: python main.py --tui
+2. Select project
+3. "Run Devussy pipeline? [y/N]"
+   - If yes: LLM interview → generates devplan + phases
+   - If existing devplan found: option to reuse or regenerate
+4. Dashboard starts in DEVUSSY MODE if plan exists
+```
+
+#### Files Generated
+| File | Location | Purpose |
+|------|----------|---------|
+| `devplan.md` | `scratch/shared/` | Full development plan with scope and architecture |
+| `phases.md` | `scratch/shared/` | Combined phase document |
+| `phases/` | `scratch/shared/phases/` | Individual phase files (phase1.md, phase2.md, etc.) |
+| `handoff.md` | `scratch/shared/` | Handoff instructions for continuity |
+
+#### Architect Behavior in Devussy Mode
+
+**Normal Mode** (devussy_mode=False):
+- Architect designs the project from user request
+- Creates architecture and breaks down work
+- Makes technology decisions
+
+**Devussy Mode** (devussy_mode=True):
+- Architect reads devplan.md and phases.md first
+- Executes phases in order (Phase 1, Phase 2, etc.)
+- Assigns tasks EXACTLY as described in devplan
+- No architectural decisions - all in the devplan
+- No feature additions beyond the plan
+
+#### Architect Prompt in Devussy Mode
+```
+## 🔮 DEVUSSY MODE - YOU FOLLOW THE DEVPLAN
+
+**CRITICAL RULES:**
+1. DO NOT DECIDE WHAT TO BUILD - The devplan defines everything
+2. READ THE DEVPLAN FIRST - `read_file("shared/devplan.md")`
+3. EXECUTE PHASES IN ORDER - Start with Phase 1, then Phase 2, etc.
+4. YOU ARE A DELEGATOR ONLY - Assign tasks from the devplan
+5. NO ARCHITECTURAL DECISIONS - Already in the devplan
+6. NO FEATURE ADDITIONS - Only implement what's in the devplan
+
+**WORKFLOW:**
+1. Read devplan.md and phases.md
+2. Identify current phase
+3. Spawn workers for phase tasks
+4. Assign tasks with "Phase X, Task Y: [exact task]"
+5. On phase complete, move to next phase
+```
+
+### Files Changed
+
+| File | Changes |
+|------|---------|
+| `core/devussy_integration.py` | NEW: Pipeline runner and output management |
+| `dashboard_tui.py` | Added devussy pipeline prompt at startup |
+| `core/settings_manager.py` | Added `devussy_mode` setting |
+| `dashboard_tui.py` | Architect prompt injection in devussy mode |
+
+### Settings
+
+```json
+{
+    "devussy_mode": false  // Set to true when devussy pipeline is used
+}
+```
+
+### Usage
+
+**New project with Devussy:**
+```
+1. python main.py --tui
+2. Create new project: "N"
+3. Run Devussy pipeline: "y"
+4. Complete LLM interview (describe project, answer questions)
+5. Wait for devplan generation
+6. Dashboard starts with "🔮 DEVUSSY MODE"
+7. Type "Go" to start executing the devplan
+```
+
+**Existing devplan:**
+```
+1. python main.py --tui
+2. Select project with existing devplan
+3. "Existing devplan found. Run Devussy pipeline? [y/N/Enter=use existing]"
+4. Press Enter to use existing devplan
+5. Dashboard starts in devussy mode
+```
+
+### Testing Checklist
+
+- [ ] Devussy pipeline runs when user says "y"
+- [ ] devplan.md is copied to scratch/shared/
+- [ ] phases.md is generated from phase files
+- [ ] Architect reads devplan on session start
+- [ ] Architect assigns tasks from devplan, not inventing features
+- [ ] Phase completion triggers next phase
+- [ ] Existing devplan can be reused
+
+*Last updated: December 8, 2025 (devussy integration)*
+*Status: Devussy pipeline integrated, Architect follows devplan in devussy mode*
+
+---
+
+## Latest Updates (December 8, 2025 - Swarm-Ready Devplans)
+
+### Problem
+Even with devussy integration, the Architect still had to:
+- Parse devplan manually to figure out tasks
+- Decide which agent should do what
+- Format task assignments from scratch
+- Track dependencies manually
+
+### Solution: Pre-Assigned Task Queues
+
+Devussy now generates **swarm-ready devplans** where:
+1. Every task is pre-assigned to a specific agent role
+2. Task dependencies are explicitly mapped
+3. Tool calls are suggested for each task
+4. Dispatch commands are copy-paste ready
+
+### New Files Generated
+
+| File | Purpose |
+|------|---------|
+| `task_queue.md` | Pre-formatted task queue with agent assignments |
+| `devplan.md` | Project overview (same as before) |
+| `phases.md` | Phase details (same as before) |
+
+### Task Queue Format
+
+```markdown
+#### Task 1.1: Create User Authentication Models
+
+**Status:** `pending`  
+**Agent:** `backend_dev` (Codey McBackend)  
+**Priority:** high  
+**Depends:** none  
+
+**Dispatch Command:**
+```
+assign_task("Codey McBackend", "Task 1.1: Create User Authentication Models
+
+GOAL: Implement User and Token models with password hashing
+FILES: shared/src/models/user.py, shared/src/models/auth.py
+REQUIREMENTS:
+- User model with email validation
+- Password hashing with bcrypt
+DONE: Models can be imported, tests pass")
+```
+```
+
+### Agent Auto-Assignment
+
+Tasks are auto-assigned based on content keywords:
+
+| Keywords | Agent |
+|----------|-------|
+| api, endpoint, server, database, python | backend_dev |
+| component, react, ui, css, frontend | frontend_dev |
+| test, pytest, coverage, lint | qa_engineer |
+| docker, deploy, ci/cd, pipeline | devops |
+| documentation, readme, docs | tech_writer |
+| schema, migration, sql | database_specialist |
+
+### Architect Prompt Updates
+
+The Architect in devussy mode now:
+1. Reads `task_queue.md` first (not devplan)
+2. Finds PENDING tasks with no dependencies
+3. Dispatches using pre-formatted commands
+4. Dispatches PARALLEL tasks together (same phase, no interdeps)
+5. Updates task status after completion
+
+### Parallel Dispatch Example
+
+```
+# Tasks 1.1 and 1.2 have no dependencies - dispatch together
+spawn_worker("backend_dev")
+spawn_worker("frontend_dev")
+assign_task("Codey McBackend", "Task 1.1: ...")
+assign_task("Pixel McFrontend", "Task 1.2: ...")
+```
+
+### Files Changed
+
+| File | Changes |
+|------|---------|
+| `core/devussy_integration.py` | Added task queue generation, agent inference |
+| `agents/lean_prompts.py` | Updated LEAN_DEVUSSY_ARCHITECT_PROMPT for dispatch |
+| `dashboard_tui.py` | Shows task queue info on startup |
+| `devussy/src/models.py` | Added swarm fields to DevPlanStep |
+| `devussy/src/pipeline/swarm_parser.py` | NEW: Parser for swarm task metadata |
+| `devussy/src/prompts/devplan_swarm.txt` | NEW: Swarm-aware prompt |
+| `devussy/templates/detailed_devplan_swarm.jinja` | NEW: Agent-aware template |
+
+### Testing Checklist
+
+- [ ] Devussy pipeline generates task_queue.md
+- [ ] Tasks have correct agent assignments
+- [ ] Dependencies are parsed correctly
+- [ ] Architect reads task_queue.md first
+- [ ] Parallel tasks are dispatched together
+- [ ] Task status updates work
+- [ ] Dashboard shows agent task counts
+
+*Last updated: December 8, 2025 (swarm-ready devplans)*
+*Status: Tasks pre-assigned to agents, parallel dispatch enabled, copy-paste commands ready*
+
+---
+
+## Latest Updates (December 8, 2025 - Tech Stack Handling Fix)
+
+### Problem
+Devussy-generated plans were using Python code for TypeScript/Godot projects because:
+1. `tech_stack` variable was empty ("No tech stack parsed")
+2. Prompt templates had hardcoded Python examples
+3. Agent assignment logic assumed web apps
+
+### Solution: LLM-Driven Tech Stack Handling
+
+**All decisions now driven by LLM based on interview data:**
+
+1. **Tech Stack Propagation** (`project_design.py`)
+   - If LLM response doesn't parse a tech stack section, fallback to known `languages` and `frameworks` from interview
+   - Tech stack is NEVER empty anymore
+
+2. **No Hardcoded Examples** (templates/prompts)
+   - Removed Python-specific examples from `detailed_devplan.jinja`
+   - Removed hardcoded phase structures from `devplan_swarm.txt`
+   - Removed language-specific test commands from `handoff_generation.txt`
+   - LLM reads the tech stack and generates appropriate code/commands
+
+3. **Smart Agent Assignment** (`devussy_integration.py`)
+   - Game projects (Godot, Unity) → all code goes to `backend_dev`
+   - `frontend_dev` only assigned for explicit web projects (React, Vue)
+   - Project context loaded from `project_design.md`
+
+4. **Agent Prompts Updated** (`lean_prompts.py`)
+   - Backend dev: Must read `project_design.md` first, match tech stack
+   - Frontend dev: Check if web project, REFUSE if game project
+   - QA: Use correct test framework for project's language
+
+### Files Changed
+
+| File | Changes |
+|------|---------|
+| `devussy/src/pipeline/project_design.py` | Fallback to known languages/frameworks |
+| `devussy/src/pipeline/compose.py` | Prominent tech stack in project_design.md |
+| `devussy/templates/detailed_devplan.jinja` | Removed Python examples |
+| `devussy/templates/detailed_devplan_swarm.jinja` | Generic agent table |
+| `devussy/templates/basic_devplan.jinja` | Simplified tech stack reminder |
+| `devussy/src/prompts/devplan_detailed.txt` | Generic examples |
+| `devussy/src/prompts/devplan_swarm.txt` | LLM-driven phase design |
+| `devussy/src/prompts/handoff_generation.txt` | Removed Python commands |
+| `core/devussy_integration.py` | Project context for agent assignment |
+| `agents/lean_prompts.py` | Tech stack awareness for all agents |
+
+### Key Principle
+
+**Nothing is hardcoded. The LLM reads the tech stack from the interview and generates appropriate:**
+- File extensions (.ts, .gd, .py, .rs, etc.)
+- Package managers (npm, pip, cargo, etc.)
+- Test commands (vitest, gut, pytest, etc.)
+- Build tools (vite, godot, cargo, etc.)
+
+*Last updated: December 8, 2025 (tech stack handling)*
+*Status: LLM-driven tech stack, no hardcoded language assumptions*
+
+---
+
+## Latest Updates (December 9, 2025 - Orchestration, Resume Flow & TUI Layout)
+
+### 1. One-Task-Per-Worker Orchestration
+
+**Problem:** Bossy could assign multiple tasks to the same worker concurrently, and it was hard to see when tasks were truly finished.
+
+**Solution:**
+- Updated `core/chatroom.py::assign_task` to enforce **one active task per worker**:
+  - If a worker is `WORKING` and has a `current_task_id`, new assignments are rejected.
+  - A status message is broadcast ("{agent} is busy. Wait for them to call complete_my_task().").
+- Tightened `agents/lean_prompts.py`:
+  - Architect prompts now explicitly say: ONE task per worker, check `get_swarm_state()` before assigning, and expect `assign_task()` to fail when a worker is busy.
+- Strengthened worker prompts via `LEAN_WORKER_SUFFIX`:
+  - All workers are required to call `complete_my_task(result="SUMMARY")` when done.
+  - Summary must include files touched, functionality implemented, and notes for other agents.
+
+### 2. Reliable Task Completion & Summaries
+
+**Problem:** Task completion was sometimes inferred from free-form chat phrases, leading to inconsistent summaries and stalled orchestration.
+
+**Solution:**
+- `core/agent_tools.py::_complete_my_task` now:
+  - Marks the task completed and sets the worker back to `IDLE` (as before).
+  - Broadcasts a **System notice** with a concise summary: ` Task Complete by {agent}: {summary}`.
+  - Continues to trigger the Auto Orchestrator when all tasks are complete.
+- Workers are instructed to treat `complete_my_task` as the **only** way to finish a task, keeping Bossy's view of progress consistent.
+
+### 3. Devussy DevPlan Resume & Recovery
+
+**Problem:** Joining an existing Devussy-generated project after partial work (or after phase files were accidentally edited) could leave Bossy without a clear understanding of what remained to do.
+
+**Solution:**
+- Added recovery helpers in `core/devussy_integration.py`:
+  - `recover_project_state(project_path)`
+    - Scans `scratch/shared` for existing source files.
+    - Parses `devplan.md` phase anchors (`PHASE_X_STATUS_START/END`).
+    - Computes total vs completed tasks and identifies the current phase and next task number.
+  - `regenerate_task_queue_from_devplan(project_path)`
+    - Rebuilds a minimal `task_queue.md` from the devplan's phase overview table when phase files or the queue are missing/corrupted.
+- Updated `agents/lean_prompts.py::LEAN_DEVUSSY_ARCHITECT_PROMPT`:
+  - Architect now supports multiple phase file formats (anchor-style tasks, `@agent:` tasks, or simple section-based descriptions).
+  - On resume, Bossy is instructed to:
+    - Read `devplan.md` and the current phase file.
+    - Use `get_project_structure()` to see what files already exist.
+    - Dispatch only **remaining** work.
+
+### 4. Dashboard TUI: Resume-Aware DevPlan Summary
+
+**Problem:** When re-opening a project, it wasn't obvious how much work had already been done or whether the Devussy task queue was healthy.
+
+**Solution:**
+- `dashboard_tui.py::_show_devplan_summary` now:
+  - Loads devplan/phase metadata via `load_devplan_for_swarm()`.
+  - Calls `recover_project_state()` to compute:
+    - Number of existing source files.
+    - Phase/task progress (completed vs total, current phase).
+  - Validates `task_queue.md` and phase files:
+    - If the queue is missing or essentially empty, marks it for recovery.
+    - If no phase file contains valid task markers (`@agent:`, `### Task`, etc.), flags the phases as missing task details.
+  - When needed, calls `regenerate_task_queue_from_devplan()` and reports success/failure in the chat.
+  - Prints a friendly summary such as:
+    - `Found N existing source files (resuming project)`
+    - `Progress: X/Y tasks, currently on Phase P`
+
+### 5. Updated TUI Layout: In-Flight Center, API History Bottom-Right
+
+**Problem:** The original API log layout was hard to read; in-flight calls were buried, and the right sidebar felt cramped.
+
+**Solution:**
+- `dashboard_tui.py::SwarmDashboard.CSS` and `compose()` now define:
+  - **Center Column**
+    - A collapsible **In-Flight Requests** bar at the **top center** (max ~1/3 of the center column) showing current API calls, each clickable to expand.
+    - Main chat log below the in-flight bar.
+  - **Right Column**
+    - DevPlan + tools + tokens at the top/middle as before.
+    - A collapsible **API History** panel anchored to the **bottom-right**, sized to roughly one-third of the right column height.
+    - API history uses the existing `ApiLogEntry` expansion model (collapsed → summary → full request/response + tool calls).
+- Agents sidebar (`#agents-scroll`) was hardened to always be scrollable, and keyboard scrolling via `Ctrl+A` / `Ctrl+Up` / `Ctrl+Down` continues to work with the new layout.
+
+*Last updated: December 9, 2025 (orchestration + resume + TUI layout)*
+*Status: One-task-per-worker enforced, tool-based completion summaries visible, Devussy projects resumable via dashboard + Architect helpers*

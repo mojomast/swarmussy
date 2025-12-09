@@ -923,32 +923,35 @@ class SwarmDashboard(App):
     Screen {
         layout: grid;
         grid-size: 3;
-        grid-columns: 1.8fr 3.2fr 2.0fr;  /* Wider sidebars */
+        grid-columns: 1.5fr 3.5fr 2.0fr;
     }
 
-    /* LEFT SIDEBAR - Agent Cards (full height) */
+    /* LEFT SIDEBAR - Agent Cards (full height, scrollable) */
     #left-sidebar {
         height: 100%;
         layout: vertical;
         border: solid $primary;
         padding: 0;
+        overflow: hidden;
     }
     
     #agents-scroll {
         height: 1fr;
-        border-bottom: solid $primary-darken-2;
-        overflow: auto;
+        min-height: 10;
+        overflow-y: auto;
+        overflow-x: hidden;
     }
     
     #agents-container {
         width: 100%;
+        height: auto;
         padding: 1;
     }
     
     .agent-card {
         width: 100%;
         height: auto;
-        min-height: 4;  /* More compact when collapsed */
+        min-height: 4;
         margin-bottom: 1;
         padding: 0;
         overflow: hidden;
@@ -957,7 +960,7 @@ class SwarmDashboard(App):
     ApiLogEntry {
         width: 100%;
         height: auto;
-        padding: 0;
+        padding: 0 1;
         margin-bottom: 1;
         border: solid $primary-darken-3;
     }
@@ -966,28 +969,54 @@ class SwarmDashboard(App):
         background: $primary-darken-2;
     }
 
-    /* CENTER - Chat */
+    /* CENTER - Inflight (collapsible top) + Chat + Input */
     #center {
         height: 100%;
         layout: vertical;
+        overflow: hidden;
+    }
+
+    #inflight-collapsible {
+        height: auto;
+        max-height: 33%;
+        border: solid $warning;
+        margin-bottom: 1;
+    }
+    
+    #inflight-scroll {
+        height: auto;
+        max-height: 20;
+        overflow-y: auto;
+        overflow-x: hidden;
+        padding: 0 1;
+    }
+    
+    #inflight-container {
+        width: 100%;
+        height: auto;
+    }
+    
+    #inflight-empty {
+        color: $text-muted;
+        text-style: italic;
+        padding: 1;
     }
 
     #chat-log {
         height: 1fr;
+        min-height: 10;
         border: solid $success;
         padding: 1;
         width: 100%;
-        overflow: auto;
+        overflow-y: auto;
+        overflow-x: hidden;
     }
     
     RichLog {
         width: 100%;
-        overflow: auto;
+        overflow-y: auto;
+        overflow-x: hidden;
         scrollbar-gutter: stable;
-    }
-    
-    #chat-log > * {
-        width: 100%;
     }
 
     #input-box {
@@ -995,70 +1024,62 @@ class SwarmDashboard(App):
         padding: 0 1;
     }
 
-    /* RIGHT SIDEBAR - Tokens+Tools (top), Plan + API Log (bottom) */
+    /* RIGHT SIDEBAR - Tokens+Tools (top), Plan (middle), API History (bottom) */
     #right-sidebar {
         height: 100%;
         layout: vertical;
         border: solid $warning;
         padding: 0;
+        overflow: hidden;
     }
 
     #tokens-tools-row {
-        height: 16;
+        height: 14;
         layout: horizontal;
         border-bottom: solid $warning-darken-2;
     }
 
     #tokens-scroll {
-        width: 34;  /* Fixed width for tokens */
+        width: 32;
         height: 100%;
         border-right: solid $warning-darken-2;
         padding: 0 1;
-        overflow: auto;
+        overflow-y: auto;
+        overflow-x: hidden;
     }
 
     #tools-scroll {
-        width: 1fr;  /* Remaining space for tools */
+        width: 1fr;
         height: 100%;
         padding: 0 1;
-        overflow: auto;
+        overflow-y: auto;
+        overflow-x: hidden;
     }
 
     #plan-scroll {
-        height: 0.55fr;  /* Majority of remaining height for DevPlan */
-        padding: 1;
-        overflow: auto;
-    }
-
-    #api-log-scroll {
-        height: 0.45fr;  /* Lower portion of right sidebar under DevPlan (more room for API calls) */
+        /* Take ~2/3 of the remaining right-sidebar height */
+        height: 2fr;
         padding: 1;
         overflow-y: auto;
-        overflow-x: auto;
+        overflow-x: hidden;
     }
 
-    #api-log-inflight, #api-log-history {
+    #api-history-collapsible {
+        /* Take ~1/3 of the remaining right-sidebar height */
+        height: 1fr;
+        border-top: solid $warning-darken-2;
+    }
+    
+    #api-history-scroll {
+        height: 1fr;
+        overflow-y: auto;
+        overflow-x: hidden;
+        padding: 0 1;
+    }
+    
+    #api-history-container {
         width: 100%;
         height: auto;
-        padding: 0;
-    }
-
-    #api-log-inflight {
-        border-bottom: solid $primary-darken-3;
-        padding-bottom: 1;
-        margin-bottom: 1;
-        min-height: 2;
-    }
-
-    #inflight-label {
-        color: $warning;
-        text-style: bold;
-        margin-top: 1;
-    }
-
-    #history-label {
-        color: $text-muted;
-        margin-top: 1;
     }
 
     .section-title {
@@ -1066,6 +1087,7 @@ class SwarmDashboard(App):
         background: $primary-darken-2;
         padding: 0 1;
         width: 100%;
+        height: auto;
     }
 
     Input {
@@ -1074,6 +1096,10 @@ class SwarmDashboard(App):
     
     ScrollableContainer {
         scrollbar-gutter: stable;
+    }
+    
+    Collapsible {
+        padding: 0;
     }
     
     #files-btn {
@@ -1088,17 +1114,24 @@ class SwarmDashboard(App):
         margin: 1;
     }
     
-    /* Ensure text doesn't get cut off */
     Static {
         width: 100%;
+        height: auto;
     }
     
     TokenDetailPanel {
         width: 100%;
+        height: auto;
     }
     
     DevPlanPanel {
         width: 100%;
+        height: auto;
+    }
+    
+    ToolCallsLog {
+        height: auto;
+        max-height: 100%;
     }
     """
 
@@ -1118,12 +1151,14 @@ class SwarmDashboard(App):
 
     api_status = reactive("idle")
 
-    def __init__(self, project: Project, username: str = "You", load_history: bool = True):
+    def __init__(self, project: Project, username: str = "You", load_history: bool = True, devussy_mode: bool = False):
         super().__init__()
         self.project = project
         self.username = username
         # Whether to load prior chat history from disk on startup
         self.load_history = load_history
+        # Whether devussy pipeline was run - Architect follows devplan strictly
+        self.devussy_mode = devussy_mode
         self.chatroom: Optional[Chatroom] = None
         self.agents = []
         self.agent_cards: Dict[str, AgentCard] = {}
@@ -1169,20 +1204,24 @@ class SwarmDashboard(App):
     def compose(self) -> ComposeResult:
         yield Header()
 
-        # LEFT - Agent cards (full column)
+        # LEFT - Agent cards (scrollable)
         with Vertical(id="left-sidebar"):
+            yield Label("🤖 AGENTS", classes="section-title")
             with ScrollableContainer(id="agents-scroll"):
-                yield Label("🤖 AGENTS", classes="section-title")
                 with Vertical(id="agents-container"):
                     yield Static("Loading agents...", id="agents-placeholder")
 
-        # CENTER - Chat
+        # CENTER - Inflight requests (top, collapsible) + Chat + Input
         with Vertical(id="center"):
+            with Collapsible(title="⏳ In-Flight Requests", id="inflight-collapsible", collapsed=False):
+                with ScrollableContainer(id="inflight-scroll"):
+                    with Vertical(id="inflight-container"):
+                        yield Static("(no requests)", id="inflight-empty")
             yield RichLog(id="chat-log", highlight=True, markup=True, wrap=True)
             with Container(id="input-box"):
                 yield Input(placeholder="Type message or /help...", id="chat-input")
 
-        # RIGHT - Tokens+Tools (side by side), DevPlan + API Log below
+        # RIGHT - Tokens+Tools (top), DevPlan (middle), API History (bottom collapsible)
         with Vertical(id="right-sidebar"):
             with Horizontal(id="tokens-tools-row"):
                 with ScrollableContainer(id="tokens-scroll"):
@@ -1194,12 +1233,10 @@ class SwarmDashboard(App):
             with ScrollableContainer(id="plan-scroll"):
                 yield Label("📋 DEVPLAN", classes="section-title")
                 yield DevPlanPanel(id="devplan")
-            with ScrollableContainer(id="api-log-scroll"):
-                yield Label("📡 API LOG", classes="section-title")
-                yield Label("⏳ In-Flight Requests:", id="inflight-label")
-                yield Vertical(id="api-log-inflight")
-                yield Label("📜 Completed (click to expand):", id="history-label")
-                yield Vertical(id="api-log-history")
+            with Collapsible(title="📡 API History (click to expand)", id="api-history-collapsible", collapsed=True):
+                with ScrollableContainer(id="api-history-scroll"):
+                    with Vertical(id="api-history-container"):
+                        yield Static("(no completed requests yet)", id="api-history-empty")
             yield Button("📁 FILES", variant="primary", id="files-btn")
             yield Button("⏹ STOP", variant="error", id="stop-btn")
 
@@ -1214,8 +1251,10 @@ class SwarmDashboard(App):
         self.token_panel = self.query_one("#tokens", TokenDetailPanel)
         self.devplan_panel = self.query_one("#devplan", DevPlanPanel)
         self.tools_log = self.query_one("#tools-log", ToolCallsLog)
-        self.api_log_inflight = self.query_one("#api-log-inflight", Vertical)
-        self.api_log_history = self.query_one("#api-log-history", Vertical)
+        # Inflight requests now in center top
+        self.api_log_inflight = self.query_one("#inflight-container", Vertical)
+        # API history now in right sidebar collapsible
+        self.api_log_history = self.query_one("#api-history-container", Vertical)
         self.api_log_entries: Dict[str, ApiLogEntry] = {}
         self.api_inflight_entries: Dict[str, ApiLogEntry] = {}
         self.api_entry_counter = 0
@@ -1239,6 +1278,15 @@ class SwarmDashboard(App):
 
         model = settings.get("architect_model", ARCHITECT_MODEL)
         architect = create_agent("architect", model=model)
+        
+        # If devussy mode, inject devplan-following instructions
+        if self.devussy_mode:
+            devussy_prompt = self._get_devussy_architect_prompt()
+            if devussy_prompt:
+                # Prepend devussy instructions to the architect's system prompt
+                # Must modify architect.system_prompt directly (not config - already copied during __init__)
+                architect.system_prompt = devussy_prompt + "\n\n" + architect.system_prompt
+        
         self.agents = [architect]
         await self.chatroom.initialize(self.agents)
 
@@ -1268,8 +1316,113 @@ class SwarmDashboard(App):
         self.create_agent_card(architect)
 
         self.chat_log.write(Text("🏗️ Bossy McArchitect joined the swarm", style="green"))
+        
+        # Show devussy mode info
+        if self.devussy_mode:
+            self.chat_log.write(Text("🔮 DEVUSSY MODE - Following generated devplan", style="magenta bold"))
+            self._show_devplan_summary()
+        
         self.chat_log.write(Text("Ctrl+S: Settings | Ctrl+T: Tasks | Ctrl+X: Stop | Ctrl+P: Refresh Plan", style="dim"))
         self.refresh_panels()
+    
+    def _get_devussy_architect_prompt(self) -> Optional[str]:
+        """Get the devussy-specific architect prompt that enforces plan-following."""
+        try:
+            from core.devussy_integration import load_devplan_for_swarm
+            from agents.lean_prompts import LEAN_DEVUSSY_ARCHITECT_PROMPT
+            
+            devplan_data = load_devplan_for_swarm(Path(self.project.root))
+            
+            if not devplan_data or not devplan_data.get("has_devplan"):
+                return None
+            
+            # Use the lean devussy prompt - it's optimized for dispatch
+            return LEAN_DEVUSSY_ARCHITECT_PROMPT
+        except Exception as e:
+            logger.warning(f"Failed to load devussy prompt: {e}")
+            return None
+    
+    def _show_devplan_summary(self):
+        """Show a summary of the devplan in chat and recover if needed."""
+        try:
+            from core.devussy_integration import (
+                load_devplan_for_swarm, SWARM_AGENTS, 
+                recover_project_state, regenerate_task_queue_from_devplan
+            )
+            
+            project_root = Path(self.project.root)
+            devplan_data = load_devplan_for_swarm(project_root)
+            
+            if devplan_data and devplan_data.get("has_devplan"):
+                self.chat_log.write(Text("📋 Devplan loaded:", style="cyan"))
+                
+                # Check project state for recovery needs
+                state = recover_project_state(project_root)
+                
+                # Show existing files if resuming
+                if state.get("existing_files"):
+                    file_count = len(state["existing_files"])
+                    self.chat_log.write(Text(f"   📂 Found {file_count} existing source files (resuming project)", style="yellow"))
+                
+                # Show phase progress
+                if state.get("phases"):
+                    completed = state.get("completed_tasks", 0)
+                    total = state.get("total_tasks", 0)
+                    current = state.get("current_phase", 1)
+                    self.chat_log.write(Text(f"   📊 Progress: {completed}/{total} tasks, currently on Phase {current}", style="dim"))
+                
+                # Check for task queue - regenerate if empty/corrupted
+                task_queue_file = project_root / "scratch" / "shared" / "task_queue.md"
+                needs_recovery = False
+                
+                if task_queue_file.exists():
+                    queue_content = task_queue_file.read_text(encoding="utf-8")
+                    # Check if task queue is essentially empty
+                    if len(queue_content) < 200 or "## Task Queue" not in queue_content:
+                        needs_recovery = True
+                else:
+                    needs_recovery = True
+                
+                # Check if phase files are corrupted (no proper task format)
+                phase_files = devplan_data.get("phase_files", [])
+                if phase_files:
+                    has_valid_tasks = False
+                    for pf in phase_files:
+                        content = pf.get("content", "")
+                        if "@agent:" in content or "### Task" in content or "## Task" in content:
+                            has_valid_tasks = True
+                            break
+                    if not has_valid_tasks:
+                        needs_recovery = True
+                        self.chat_log.write(Text("   ⚠️ Phase files missing task details", style="yellow"))
+                
+                if needs_recovery:
+                    self.chat_log.write(Text("   🔧 Regenerating task queue...", style="yellow"))
+                    if regenerate_task_queue_from_devplan(project_root):
+                        self.chat_log.write(Text("   ✅ Task queue recovered from devplan", style="green"))
+                    else:
+                        self.chat_log.write(Text("   ❌ Could not recover task queue", style="red"))
+                else:
+                    self.chat_log.write(Text("   🚀 Task queue ready", style="green"))
+                    
+                    # Count tasks per agent
+                    queue_content = task_queue_file.read_text(encoding="utf-8")
+                    agent_counts = {}
+                    for agent_key in SWARM_AGENTS:
+                        count = queue_content.lower().count(f"`{agent_key}`")
+                        if count > 0:
+                            agent_counts[agent_key] = count
+                    
+                    if agent_counts:
+                        agents_str = ", ".join([
+                            f"{SWARM_AGENTS[k]['name'].split()[0]}:{v}" 
+                            for k, v in sorted(agent_counts.items())
+                        ])
+                        self.chat_log.write(Text(f"   🤖 {agents_str}", style="dim"))
+                
+                self.chat_log.write(Text("   Type 'Go' to start/resume executing the devplan", style="yellow"))
+        except Exception as e:
+            self.chat_log.write(Text(f"⚠️ Could not load devplan summary: {e}", style="yellow"))
 
     def create_agent_card(self, agent):
         """Create a card widget for an agent."""
@@ -1321,6 +1474,14 @@ class SwarmDashboard(App):
             entry.set_request(timestamp, agent_name, data)
             self.api_log_entries[request_id] = entry
             self.api_inflight_entries[request_id] = entry
+            
+            # Remove empty placeholder if present
+            try:
+                empty = self.query_one("#inflight-empty", Static)
+                empty.remove()
+            except Exception:
+                pass
+            
             try:
                 self.api_log_inflight.mount(entry)
             except Exception:
@@ -1354,11 +1515,26 @@ class SwarmDashboard(App):
                         entry.remove()
                     except Exception:
                         pass
+                    
+                    # Remove history empty placeholder if present
+                    try:
+                        empty = self.query_one("#api-history-empty", Static)
+                        empty.remove()
+                    except Exception:
+                        pass
+                    
                     try:
                         self.api_log_history.mount(entry)
                     except Exception:
                         pass
                     self.api_inflight_entries.pop(request_id, None)
+                    
+                    # Restore inflight empty if no more inflight
+                    if not self.api_inflight_entries:
+                        try:
+                            self.api_log_inflight.mount(Static("(no requests)", id="inflight-empty"))
+                        except Exception:
+                            pass
 
                 self._trim_api_history()
 
@@ -1388,11 +1564,26 @@ class SwarmDashboard(App):
                         entry.remove()
                     except Exception:
                         pass
+                    
+                    # Remove history empty placeholder if present
+                    try:
+                        empty = self.query_one("#api-history-empty", Static)
+                        empty.remove()
+                    except Exception:
+                        pass
+                    
                     try:
                         self.api_log_history.mount(entry)
                     except Exception:
                         pass
                     self.api_inflight_entries.pop(request_id, None)
+                    
+                    # Restore inflight empty if no more inflight
+                    if not self.api_inflight_entries:
+                        try:
+                            self.api_log_inflight.mount(Static("(no requests)", id="inflight-empty"))
+                        except Exception:
+                            pass
 
                 self._trim_api_history()
 
@@ -2016,8 +2207,12 @@ class SwarmDashboard(App):
 # PROJECT SELECTION & MAIN
 # ─────────────────────────────────────────────────────────────────────────────
 
-def select_project_cli() -> tuple[Project, str, bool]:
-    """CLI project selection before launching TUI."""
+def select_project_cli() -> tuple[Project, str, bool, bool]:
+    """CLI project selection before launching TUI.
+    
+    Returns:
+        Tuple of (project, username, load_history, devussy_mode)
+    """
     from rich.console import Console
     from rich.panel import Panel
 
@@ -2026,6 +2221,7 @@ def select_project_cli() -> tuple[Project, str, bool]:
     projects = pm.list_projects()
     last_project = pm.get_last_project()
     settings = get_settings()
+    devussy_mode = False
 
     console.print()
     console.print(Panel("[bold cyan]🚀 AGENT SWARM DASHBOARD[/bold cyan]", style="cyan"))
@@ -2060,6 +2256,87 @@ def select_project_cli() -> tuple[Project, str, bool]:
     console.print(f"[green]✓ Using project: {project.name}[/green]")
     console.print()
 
+    # Ask about Devussy pipeline
+    console.print()
+    console.print(Panel(
+        "[bold magenta]🔮 DEVUSSY PIPELINE[/bold magenta]\n"
+        "[dim]Generate a structured development plan before starting the swarm.\n"
+        "The swarm will execute the generated plan phase by phase.[/dim]",
+        style="magenta"
+    ))
+    
+    # Check if devussy is available
+    try:
+        from core.devussy_integration import (
+            check_devussy_available, 
+            run_devussy_pipeline_sync, 
+            load_devplan_for_swarm,
+            select_devussy_model,
+        )
+        devussy_available = check_devussy_available()
+    except ImportError:
+        devussy_available = False
+    
+    if devussy_available:
+        # Check if project already has a devplan
+        existing_devplan = load_devplan_for_swarm(Path(project.root))
+        
+        if existing_devplan and existing_devplan.get("has_devplan"):
+            console.print("[green]✓ Existing devplan found in project[/green]")
+            devussy_choice = input("Run Devussy pipeline? [y/N/use existing=Enter]: ").strip().lower()
+            if devussy_choice in ("y", "yes"):
+                # Let user select model for pipeline
+                devussy_model = select_devussy_model()
+                saved_model = devussy_model or settings.get("devussy_model")
+                if devussy_model:
+                    settings.set("devussy_model", devussy_model)
+                
+                console.print("\n[magenta]Starting Devussy pipeline...[/magenta]\n")
+                success, message = run_devussy_pipeline_sync(
+                    Path(project.root), 
+                    verbose=False,
+                    model=saved_model,
+                )
+                if success:
+                    console.print(f"[green]✓ {message}[/green]")
+                    devussy_mode = True
+                else:
+                    console.print(f"[red]✗ {message}[/red]")
+                    console.print("[yellow]Continuing without devussy...[/yellow]")
+            elif devussy_choice in ("n", "no"):
+                console.print("[dim]Skipping devussy, starting normal swarm mode[/dim]")
+            else:
+                # Use existing devplan
+                console.print("[green]✓ Using existing devplan[/green]")
+                devussy_mode = True
+        else:
+            devussy_choice = input("Run Devussy pipeline to create a development plan? [y/N]: ").strip().lower()
+            if devussy_choice in ("y", "yes"):
+                # Let user select model for pipeline
+                devussy_model = select_devussy_model()
+                saved_model = devussy_model or settings.get("devussy_model")
+                if devussy_model:
+                    settings.set("devussy_model", devussy_model)
+                
+                console.print("\n[magenta]Starting Devussy pipeline...[/magenta]\n")
+                success, message = run_devussy_pipeline_sync(
+                    Path(project.root), 
+                    verbose=False,
+                    model=saved_model,
+                )
+                if success:
+                    console.print(f"[green]✓ {message}[/green]")
+                    devussy_mode = True
+                else:
+                    console.print(f"[red]✗ {message}[/red]")
+                    console.print("[yellow]Continuing without devussy...[/yellow]")
+            else:
+                console.print("[dim]Skipping devussy, starting normal swarm mode[/dim]")
+    else:
+        console.print("[yellow]Devussy not available (missing dependencies)[/yellow]")
+    
+    console.print()
+
     saved_username = settings.get("username", "You")
     username = input(f"Your name [{saved_username}]: ").strip()
     if username:
@@ -2079,12 +2356,17 @@ def select_project_cli() -> tuple[Project, str, bool]:
         load_history = default_load
 
     settings.set("load_previous_history", load_history)
+    
+    # Store devussy mode in settings for the session
+    settings.set("devussy_mode", devussy_mode)
 
     console.print()
+    if devussy_mode:
+        console.print("[magenta]Starting in DEVUSSY MODE - Architect will follow the devplan[/magenta]")
     console.print("[dim]Starting dashboard... (Ctrl+Q to quit)[/dim]")
     console.print()
 
-    return project, username[:20], load_history
+    return project, username[:20], load_history, devussy_mode
 
 
 def main():
@@ -2112,8 +2394,13 @@ def main():
             print(f"Error: {error}")
         return
 
-    project, username, load_history = select_project_cli()
-    app = SwarmDashboard(project=project, username=username, load_history=load_history)
+    project, username, load_history, devussy_mode = select_project_cli()
+    app = SwarmDashboard(
+        project=project, 
+        username=username, 
+        load_history=load_history,
+        devussy_mode=devussy_mode
+    )
     app.run()
 
 

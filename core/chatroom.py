@@ -182,6 +182,21 @@ class Chatroom:
 
         task_manager = get_task_manager()
 
+        # ENFORCE ONE-TASK-PER-AGENT: Block if agent is already WORKING on a different task
+        if (
+            target_agent.status == AgentStatus.WORKING
+            and target_agent.current_task_id is not None
+        ):
+            existing_task = task_manager.get_task(target_agent.current_task_id)
+            if existing_task and existing_task.status in (TaskStatus.PENDING, TaskStatus.IN_PROGRESS):
+                logger.warning(
+                    f"Cannot assign new task to {agent_name}: already working on task {target_agent.current_task_id[:8]}"
+                )
+                await self._broadcast_status(
+                    f"⚠️ {target_agent.name} is busy. Wait for them to call complete_my_task()."
+                )
+                return False
+
         # Normalize description to detect duplicates (collapse whitespace)
         def _norm(text: str) -> str:
             return " ".join((text or "").split()).strip().lower()
@@ -431,6 +446,22 @@ class Chatroom:
                 logger.info(f"Architect {architect.name} did not respond. Status: {architect.status.value}, "
                            f"Memory size: {len(architect._short_term_memory)}")
             logger.info("No agents chose to respond this round")
+            
+            # STILL check task completion even if no one responded!
+            # This fixes the bug where swarm stalls after all tasks complete
+            try:
+                from core.task_manager import get_task_manager
+                tm = get_task_manager()
+                all_tasks = tm.get_all_tasks()
+                open_tasks = [t for t in all_tasks if t.status in (TaskStatus.PENDING, TaskStatus.IN_PROGRESS)]
+                completed_tasks = [t for t in all_tasks if t.status == TaskStatus.COMPLETED]
+                
+                if not open_tasks and completed_tasks:
+                    logger.info(f"All {len(completed_tasks)} tasks complete, sending Auto Orchestrator message")
+                    await self._send_auto_orchestrator_message(len(completed_tasks))
+            except Exception as e:
+                logger.warning(f"Failed to check task completion: {e}")
+            
             return []
 
         # Announce that these agents are thinking, so the UI shows activity immediately

@@ -32,6 +32,9 @@ from config.settings import (
     TOOL_MAX_TOKENS
 )
 
+# DEBUG: Check if API key was loaded
+print(f"[DEBUG] REQUESTY_API_KEY loaded: {bool(REQUESTY_API_KEY)} (len={len(REQUESTY_API_KEY) if REQUESTY_API_KEY else 0})")
+
 # API logging callback - set by dashboard_tui
 _api_log_callback = None
 
@@ -47,6 +50,7 @@ from core.models import Message, MessageRole, MessageType, AgentConfig, MemoryEn
 from core.memory_store import get_memory_store
 from core.summarizer import ConversationMemoryManager
 from core.agent_tools import AgentToolExecutor, TOOL_DEFINITIONS, get_tools_system_prompt, get_tools_for_agent
+from core.slim_tools import get_slim_tools_for_agent, get_slim_tools_prompt
 from core.task_manager import get_task_manager
 from core.token_tracker import get_token_tracker
 from core.settings_manager import get_settings
@@ -195,12 +199,11 @@ class BaseAgent(ABC):
         """
         Build the message context for the API call.
         
-        Combines:
-        - System prompt with persona
-        - Tool instructions (if enabled)
-        - Long-term memory context
-        - Short-term memory (recent messages)
-        - Current Task Context (if assigned)
+        In EFFICIENT MODE (default):
+        - Uses lean system prompts (~70% smaller)
+        - Minimal tool descriptions (~80% smaller)
+        - Fewer history messages (5 vs 10)
+        - Skips long-term memory context
         
         Args:
             global_history: The global chat history
@@ -208,14 +211,32 @@ class BaseAgent(ABC):
         Returns:
             List of messages in API format
         """
+        settings = get_settings()
+        efficient_mode = settings.get("efficient_mode", True)
+        context_msg_count = settings.get("context_messages", 5)
+        skip_memory = settings.get("skip_memory_context", True)
+        
         messages = []
         
-        # Get long-term memory context
-        memory_store = await get_memory_store()
-        memory_context = await self._memory_manager.get_context_memories(memory_store)
+        # Get long-term memory context (only if not in efficient mode)
+        memory_context = ""
+        if not efficient_mode and not skip_memory:
+            memory_store = await get_memory_store()
+            memory_context = await self._memory_manager.get_context_memories(memory_store)
         
-        # Build enhanced system prompt
-        focus_instruction = """
+        # Build system prompt - LEAN version for efficient mode
+        if efficient_mode:
+            # Minimal focus instruction
+            focus_instruction = """
+## RULES
+- NO placeholders. Write COMPLETE code.
+- Use write_file for code, not chat.
+- Call complete_my_task(result="...") when done.
+- Keep chat SHORT. Tools do the work.
+"""
+        else:
+            # Original verbose instruction
+            focus_instruction = """
 
 ## CRITICAL - PROFESSIONAL CODING STANDARDS:
 You are part of a high-performance software development swarm. Your goal is to ship high-quality, production-ready code.
@@ -246,26 +267,29 @@ Keep chat responses concise and focused on the task. Use the tools for the heavy
         
         # Add tool instructions if enabled
         if self.tools_enabled:
-            tool_prompt = get_tools_system_prompt().replace("{agent_name}", self.name)
+            if efficient_mode:
+                tool_prompt = get_slim_tools_prompt(self.name)
+            else:
+                tool_prompt = get_tools_system_prompt().replace("{agent_name}", self.name)
             enhanced_system_prompt += tool_prompt
         
         if memory_context:
             enhanced_system_prompt += f"\n\n## Your Memories:\n{memory_context}"
             
-        # Add Current Task Context
+        # Add Current Task Context (always include - it's essential)
         if self.current_task_id:
             task_manager = get_task_manager()
             task = task_manager.get_task(self.current_task_id)
             if task:
-                enhanced_system_prompt += f"\n\n## CURRENT ASSIGNMENT:\nTask ID: {task.id}\nDescription: {task.description}\nStatus: {task.status}"
+                enhanced_system_prompt += f"\n\n## TASK: {task.description}"
         
         messages.append({
             "role": "system",
             "content": enhanced_system_prompt
         })
         
-        # Build role-aware view of recent history
-        recent_messages = global_history[-10:]
+        # Build role-aware view of recent history - use configured count
+        recent_messages = global_history[-context_msg_count:]
         is_architect = "Architect" in self.__class__.__name__ or "Architect" in self.name
 
         if is_architect:
@@ -273,7 +297,7 @@ Keep chat responses concise and focused on the task. Use the tools for the heavy
             for msg in recent_messages:
                 messages.append(msg.to_api_format())
         else:
-            # Workers: focus on their current assignment and latest human intent
+            # Workers: MINIMAL context - just task assignment + last human message
             seen_ids = set()
             worker_context: List[Message] = []
 
@@ -288,25 +312,21 @@ Keep chat responses concise and focused on the task. Use the tools for the heavy
                 worker_context.append(last_human)
                 seen_ids.add(last_human.id)
 
-            # Include this worker's join/assignment messages and its own prior outputs
+            # Include task assignment message if present
             for msg in recent_messages:
                 if msg.id in seen_ids:
                     continue
-                # Own messages
-                if msg.sender_name == self.name:
-                    worker_context.append(msg)
-                    seen_ids.add(msg.id)
-                    continue
-                # System notices that mention this worker (joins, task assignments)
+                # System notices that mention this worker (task assignments)
                 if msg.role == MessageRole.SYSTEM and self.name in msg.content:
                     worker_context.append(msg)
                     seen_ids.add(msg.id)
+                    break  # Just the most recent assignment
 
-            # Fallback: if nothing special was found, use the generic recent tail
+            # Fallback: if nothing found, use last 2 messages only
             if not worker_context:
-                worker_context = recent_messages
+                worker_context = recent_messages[-2:] if len(recent_messages) >= 2 else recent_messages
 
-            for msg in worker_context[-10:]:
+            for msg in worker_context:
                 messages.append(msg.to_api_format())
         
         return messages
@@ -364,6 +384,7 @@ Keep chat responses concise and focused on the task. Use the tools for the heavy
                 api_key = custom_key
 
         if not api_key:
+            print(f"[DEBUG] {self.name}: NO API KEY for provider '{provider}'!")  # DEBUG
             logger.error(
                 f"API key not configured for provider '{provider}'. "
                 "Set REQUESTY_API_KEY, configure a custom provider via /api, or provide ZAI_API_KEY / z.ai settings."
@@ -371,8 +392,11 @@ Keep chat responses concise and focused on the task. Use the tools for the heavy
             return {}
 
         if not api_base_url:
+            print(f"[DEBUG] {self.name}: NO API BASE URL for provider '{provider}'!")  # DEBUG
             logger.error(f"API base URL not configured for provider '{provider}'.")
             return {}
+        
+        print(f"[DEBUG] {self.name}: Provider={provider}, URL={api_base_url[:50]}..., Model={self.model}")  # DEBUG
 
         session = await self._get_session()
 
@@ -428,9 +452,13 @@ Keep chat responses concise and focused on the task. Use the tools for the heavy
                 cache_key = None
                 cached_data = None
         
-        # Add tools if enabled - use role-appropriate tools
+        # Add tools if enabled - use slim tools in efficient mode
         if use_tools and self.tools_enabled:
-            payload["tools"] = get_tools_for_agent(self.name)
+            efficient_mode = settings.get("efficient_mode", True)
+            if efficient_mode:
+                payload["tools"] = get_slim_tools_for_agent(self.name)
+            else:
+                payload["tools"] = get_tools_for_agent(self.name)
             payload["tool_choice"] = "auto"
         
         logger.info(f"[{self.name}] Making API request (tools={use_tools}, max_tokens={payload['max_tokens']})")
@@ -817,11 +845,14 @@ Keep chat responses concise and focused on the task. Use the tools for the heavy
             logger.debug(f"Agent {self.name} chose not to respond this round")
             return None
         
+        print(f"[DEBUG] {self.name}: Building context...")  # DEBUG
         # Build context
         context = await self._build_context(global_history)
+        print(f"[DEBUG] {self.name}: Context built, {len(context)} messages. Calling API...")  # DEBUG
         
         # Call API with tools enabled
         data = await self._call_api(context, use_tools=self.tools_enabled)
+        print(f"[DEBUG] {self.name}: API returned, data={bool(data)}")  # DEBUG
         
         if not data:
             return None
