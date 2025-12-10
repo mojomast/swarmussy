@@ -34,6 +34,7 @@ class SessionController:
     - Task management and dispatch
     - Devussy integration
     - Message routing with callbacks
+    - SwarmIndex for code search and caching
     
     Both TUI and CLI modes should use this controller instead of
     directly manipulating the Chatroom.
@@ -46,6 +47,7 @@ class SessionController:
         self._orchestrator = None
         self._auto_dispatcher = None
         self._traffic_relay = None
+        self._swarm_index = None  # SwarmIndex instance for code search
         self._devussy_mode: bool = False
         self._is_processing: bool = False
         self._running: bool = False
@@ -84,6 +86,11 @@ class SessionController:
     @property
     def is_running(self) -> bool:
         return self._running
+    
+    @property
+    def swarm_index(self):
+        """Get the SwarmIndex instance for this session."""
+        return self._swarm_index
     
     @property
     def agents(self) -> List:
@@ -163,6 +170,9 @@ class SessionController:
         if devussy_mode:
             await self._init_orchestrator()
         
+        # Initialize SwarmIndex for code search
+        await self._init_swarm_index()
+        
         await self._broadcast_status(f"Session initialized for project: {project.name}")
         
         return True
@@ -199,6 +209,22 @@ class SessionController:
         except Exception as e:
             logger.warning(f"File tracker init failed: {e}")
     
+    async def _init_swarm_index(self):
+        """Initialize the SwarmIndex for fast code search."""
+        try:
+            from core.swarm_index import init_swarm_index, set_swarm_index
+            
+            self._swarm_index = await init_swarm_index(Path(self._project.root))
+            set_swarm_index(self._swarm_index)
+            
+            stats = self._swarm_index.get_stats()
+            file_count = stats.get("file_count", 0)
+            await self._broadcast_status(f"SwarmIndex: indexed {file_count} files")
+            logger.info(f"SwarmIndex initialized: {file_count} files indexed")
+        except Exception as e:
+            logger.warning(f"SwarmIndex init failed: {e}")
+            self._swarm_index = None
+    
     def _get_devussy_architect_prompt(self) -> Optional[str]:
         """Get the devussy-specific architect prompt."""
         try:
@@ -222,6 +248,15 @@ class SessionController:
         if self._traffic_relay:
             try:
                 await self._traffic_relay.stop()
+            except Exception:
+                pass
+        
+        # Close SwarmIndex
+        if self._swarm_index:
+            try:
+                await self._swarm_index.close()
+                from core.swarm_index import set_swarm_index
+                set_swarm_index(None)
             except Exception:
                 pass
         

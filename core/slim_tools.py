@@ -105,6 +105,37 @@ SLIM_TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
+            "name": "indexed_search_code",
+            "description": "Fast FTS search. Use FIRST for code discovery. Cached.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "file_pattern": {"type": "string", "description": "e.g. *.py"},
+                    "max_results": {"type": "integer"}
+                },
+                "required": ["query"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "indexed_related_files",
+            "description": "Find related files: same dir, tests, similar names.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "max_results": {"type": "integer"}
+                },
+                "required": ["path"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "run_command",
             "description": "Run shell cmd. Allowed: python/pip/pytest/npm/node/git status/ls/cat/grep.",
             "parameters": {
@@ -314,19 +345,26 @@ SLIM_ORCHESTRATOR_TOOLS = [
 
 SLIM_TOOLS_PROMPT = """
 ## TOOLS
-- write_file(path, content) - OVERWRITES file! Read first if updating
+- indexed_search_code(query) - FAST FTS search. Use FIRST for discovery!
+- indexed_related_files(path) - Find tests, same-dir files, similar names
 - read_file(path) / read_multiple_files(paths) - Read files
+- write_file(path, content) - OVERWRITES file! Read first if updating
 - replace_in_file(path, old, new) - Edit existing file (preferred for updates)
 - append_file(path, content) - Add to end without overwriting
-- search_code(query, file_pattern) - Find code
 - run_command(cmd) - Run tests: pytest/npm test
 - complete_my_task(result) - REQUIRED when done
 
+## WORKFLOW
+1. indexed_search_code(query) - Find relevant files
+2. indexed_related_files(path) - Find tests/related
+3. read_multiple_files([paths]) - Read only what you need
+4. write_file / replace_in_file - Implement
+5. complete_my_task(result) - REQUIRED
+
 ## RULES
+- Use indexed_search_code BEFORE reading files
 - Paths relative to shared/
-- READ before WRITE when updating existing files
 - Write COMPLETE implementations
-- Call complete_my_task when finished
 """
 
 SLIM_ORCHESTRATOR_PROMPT = """

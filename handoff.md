@@ -652,6 +652,106 @@ Added four new tools to improve agent efficiency and collaboration:
 
 - **`get_task_context()`**: Returns comprehensive context: current task details, project structure, what other agents are working on, and helpful tips. Workers should call this at task start.
 
+---
+
+## Latest Updates (December 2025 - SwarmIndex: Indexing & Caching Layer)
+
+### Overview
+
+Added a custom indexing and caching layer ("SwarmIndex") for efficient code search and context management. This is a lightweight, project-local system using SQLite FTS5 - no external services required.
+
+### New Files
+
+| File | Purpose |
+|------|---------|
+| `core/swarm_index.py` | SQLite FTS5-backed code index with incremental updates |
+| `core/tool_cache.py` | LRU cache for expensive tool operations |
+| `tests/test_swarm_index.py` | Unit tests for SwarmIndex |
+| `tests/test_tool_cache.py` | Unit tests for ToolCache |
+
+### New Tools
+
+Two new tools for agents to discover code efficiently:
+
+- **`indexed_search_code(query, file_pattern?, max_results?)`**: Fast full-text search over indexed code files. Uses SQLite FTS5 for efficient searching. Supports FTS5 syntax (quotes for exact match, OR, NOT). Results are cached.
+
+- **`indexed_related_files(path, max_results?)`**: Find files related to a given path - same directory, test files (test_foo.py, foo.test.ts), similar names (auth.py → auth_routes.py).
+
+### How It Works
+
+1. **Initialization**: When a session starts, `SessionController` initializes a `SwarmIndex` for the project. The index is stored at `<project_root>/scratch/shared/.swarm_index.db`.
+
+2. **Indexing**: The index walks all code files (`.py`, `.ts`, `.js`, `.go`, `.rs`, etc.) under `scratch/shared/`, storing content in SQLite FTS5 tables.
+
+3. **Incremental Updates**: When agents modify files via `write_file`, `replace_in_file`, `edit_file`, `append_file`, or `delete_file`, the index is notified and marks those files as dirty.
+
+4. **Search**: `indexed_search_code` queries the FTS5 index for fast full-text search. Results include file paths and snippets with matched terms highlighted.
+
+5. **Caching**: Tool results are cached in an LRU cache with TTL expiration. Cache is invalidated when files change.
+
+### Agent Workflow (Updated)
+
+Agents are now instructed to use indexed tools first for code discovery:
+
+```
+1. indexed_search_code(query) - Find relevant files FAST
+2. indexed_related_files(path) - Find tests/related modules  
+3. read_multiple_files([paths]) - Read only what you need
+4. write_file / replace_in_file - Implement
+5. complete_my_task(result) - REQUIRED
+```
+
+### Caching Layers
+
+**Tool-Level Cache** (`core/tool_cache.py`):
+- LRU cache with configurable max entries (default: 256)
+- TTL expiration (default: 5 minutes)
+- Automatic invalidation when files change
+- Shared across all agents
+
+**Per-Task Context Cache** (`agents/base_agent.py`):
+- `TaskContext` dataclass stores per-task discoveries
+- Tracks key files, search results, related files
+- Avoids redundant searches within a task
+- Auto-pruned (keeps last 5 tasks)
+
+### Configuration
+
+No configuration required - SwarmIndex initializes automatically when a project is loaded. The index is stored alongside project files and rebuilds incrementally.
+
+### Testing
+
+```bash
+# Run SwarmIndex tests
+pytest tests/test_swarm_index.py -v
+
+# Run ToolCache tests  
+pytest tests/test_tool_cache.py -v
+```
+
+### Manual Testing Flow
+
+1. Start TUI: `python main.py --tui`
+2. Select a project with existing code
+3. Confirm index builds (status: "SwarmIndex: indexed N files")
+4. Use a worker to search: "Find all authentication code"
+5. Verify `indexed_search_code` is used instead of `search_code`
+6. Modify a file and search again - results should reflect changes
+
+### Known Limitations
+
+- Index only covers files under `scratch/shared/`
+- Maximum file size: 500KB (larger files skipped)
+- FTS5 tokenization is basic (porter stemmer) - no semantic search
+- Cache invalidation is conservative (clears all on any file change)
+
+### Future Improvements (Not Implemented)
+
+- Semantic/embedding-based search
+- Symbol-level indexing (functions, classes, imports)
+- Cross-file reference tracking
+- Smarter cache invalidation (per-file granularity)
+
 ### 2. Enhanced `search_code` Tool
 
 - **Regex support**: `search_code(query="def\\s+\\w+", regex=true)`

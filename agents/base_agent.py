@@ -10,7 +10,9 @@ import aiohttp
 import random
 import json
 import os
+import time
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import List, Optional, Dict, Any, Callable
 import logging
@@ -60,6 +62,42 @@ _ZAI_RESPONSE_CACHE: Dict[str, Any] = {}
 _ZAI_CACHE_MAX_ENTRIES = 256
 
 
+@dataclass
+class TaskContext:
+    """
+    Per-task context cache for efficient file discovery.
+    
+    Stores information discovered during a task to avoid redundant
+    searches and file reads across tool calls.
+    """
+    task_id: str
+    key_files: List[str] = field(default_factory=list)
+    indexed_queries: Dict[str, List[str]] = field(default_factory=dict)  # query -> [paths]
+    related_files: Dict[str, List[str]] = field(default_factory=dict)  # path -> [related]
+    created_at: float = field(default_factory=time.time)
+    
+    def add_key_file(self, path: str) -> None:
+        """Add a file to the key files list (deduped)."""
+        if path not in self.key_files:
+            self.key_files.append(path)
+    
+    def add_search_result(self, query: str, paths: List[str]) -> None:
+        """Cache search results for a query."""
+        self.indexed_queries[query] = paths
+    
+    def get_search_result(self, query: str) -> Optional[List[str]]:
+        """Get cached search results for a query."""
+        return self.indexed_queries.get(query)
+    
+    def add_related_files(self, path: str, related: List[str]) -> None:
+        """Cache related files for a path."""
+        self.related_files[path] = related
+    
+    def get_related_files(self, path: str) -> Optional[List[str]]:
+        """Get cached related files for a path."""
+        return self.related_files.get(path)
+
+
 class BaseAgent(ABC):
     """
     Abstract base class for AI agents in the chatroom.
@@ -70,6 +108,7 @@ class BaseAgent(ABC):
     - Short-term memory (rolling window of recent messages)
     - Long-term memory (persisted facts and summaries)
     - Tool calling capabilities for file operations
+    - Per-task context cache for efficient file discovery
     """
     
     def __init__(self, config: AgentConfig):
@@ -110,6 +149,9 @@ class BaseAgent(ABC):
         
         # Track messages seen for summarization
         self._messages_since_summary = 0
+        
+        # Per-task context cache for efficient file discovery
+        self._task_context_cache: Dict[str, TaskContext] = {}
     
     async def _get_session(self) -> aiohttp.ClientSession:
         """Get or create the aiohttp session."""
@@ -125,6 +167,38 @@ class BaseAgent(ABC):
         # Release any file locks this agent holds
         from core.agent_tools import get_lock_manager
         await get_lock_manager().release_all_by_agent(self.agent_id)
+    
+    def get_task_context(self) -> Optional[TaskContext]:
+        """Get the context cache for the current task."""
+        if not self.current_task_id:
+            return None
+        return self._task_context_cache.get(self.current_task_id)
+    
+    def get_or_create_task_context(self) -> Optional[TaskContext]:
+        """Get or create a context cache for the current task."""
+        if not self.current_task_id:
+            return None
+        
+        if self.current_task_id not in self._task_context_cache:
+            self._task_context_cache[self.current_task_id] = TaskContext(
+                task_id=self.current_task_id
+            )
+            # Prune old task contexts (keep last 5)
+            if len(self._task_context_cache) > 5:
+                oldest_key = min(
+                    self._task_context_cache.keys(),
+                    key=lambda k: self._task_context_cache[k].created_at
+                )
+                del self._task_context_cache[oldest_key]
+        
+        return self._task_context_cache[self.current_task_id]
+    
+    def update_task_context_files(self, files: List[str]) -> None:
+        """Update the current task's key files list."""
+        ctx = self.get_or_create_task_context()
+        if ctx:
+            for f in files:
+                ctx.add_key_file(f)
     
     @property
     @abstractmethod

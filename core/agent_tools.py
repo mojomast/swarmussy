@@ -113,6 +113,27 @@ class FileLockManager:
         return str(Path(path).resolve())
 
 
+def _notify_index_dirty(path: str) -> None:
+    """Notify SwarmIndex and ToolCache that a file has been modified.
+    
+    Called after successful write operations to keep the index current
+    and invalidate any cached results that might be stale.
+    """
+    try:
+        from core.swarm_index import get_swarm_index
+        index = get_swarm_index()
+        if index:
+            index.mark_dirty(path)
+    except Exception:
+        pass  # Don't let index errors break file operations
+    
+    try:
+        from core.tool_cache import invalidate_cache_for_path
+        invalidate_cache_for_path(path)
+    except Exception:
+        pass  # Don't let cache errors break file operations
+
+
 def get_lock_manager() -> FileLockManager:
     """Get the singleton lock manager."""
     return FileLockManager()
@@ -250,6 +271,8 @@ class AgentToolExecutor:
             "delegate_subtask": self._delegate_subtask,
             "get_recent_changes": self._get_recent_changes,
             "log_context": self._log_context,
+            "indexed_search_code": self._indexed_search_code,
+            "indexed_related_files": self._indexed_related_files,
         }
         
         if tool_name not in tool_map:
@@ -348,6 +371,9 @@ class AgentToolExecutor:
             async with aiofiles.open(resolved, 'w', encoding='utf-8') as f:
                 await f.write(content)
             
+            # Notify index of file change
+            _notify_index_dirty(str(resolved))
+            
             return {
                 "success": True,
                 "result": f"Successfully wrote {len(content)} bytes to {path}"
@@ -398,6 +424,9 @@ class AgentToolExecutor:
             async with aiofiles.open(resolved, 'w', encoding='utf-8') as f:
                 await f.write('\n'.join(lines))
             
+            # Notify index of file change
+            _notify_index_dirty(str(resolved))
+            
             return {
                 "success": True,
                 "result": f"Edited lines {start_line}-{end_line} in {path}"
@@ -444,6 +473,9 @@ class AgentToolExecutor:
             
             async with aiofiles.open(resolved, 'w', encoding='utf-8') as f:
                 await f.write(new_content)
+            
+            # Notify index of file change
+            _notify_index_dirty(str(resolved))
                 
             return {
                 "success": True, 
@@ -515,6 +547,8 @@ class AgentToolExecutor:
         try:
             if resolved.is_file():
                 resolved.unlink()
+                # Notify index of file deletion
+                _notify_index_dirty(str(resolved))
             else:
                 return {"success": False, "error": "Cannot delete directories with this tool"}
             
@@ -1797,6 +1831,9 @@ class AgentToolExecutor:
             async with aiofiles.open(resolved, 'a', encoding='utf-8') as f:
                 await f.write(content)
             
+            # Notify index of file change
+            _notify_index_dirty(str(resolved))
+            
             return {
                 "success": True,
                 "result": f"Successfully appended {len(content)} bytes to {path}"
@@ -2082,6 +2119,158 @@ class AgentToolExecutor:
                 "files": recent_files[:20],  # Limit to 20 most recent
             }
         }
+
+    async def _indexed_search_code(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Fast full-text search over indexed code files.
+        
+        Uses SwarmIndex FTS5 for efficient searching. Falls back to
+        regular search_code if index is not available. Results are cached.
+        """
+        query = (args.get("query") or "").strip()
+        file_pattern = args.get("file_pattern")
+        max_results = args.get("max_results", 20)
+        
+        if not query:
+            return {"success": False, "error": "query is required"}
+        
+        # Check cache first
+        try:
+            from core.tool_cache import get_tool_cache
+            cache = get_tool_cache()
+            cached = cache.get("indexed_search_code", query=query, file_pattern=file_pattern, max_results=max_results)
+            if cached is not None:
+                cached["result"]["source"] = "cache"
+                return cached
+        except Exception:
+            pass
+        
+        # Try to use SwarmIndex
+        try:
+            from core.swarm_index import get_swarm_index
+            index = get_swarm_index()
+            
+            if index:
+                results = await index.search(query, file_pattern, max_results)
+                
+                response = {
+                    "success": True,
+                    "result": {
+                        "query": query,
+                        "file_pattern": file_pattern,
+                        "match_count": len(results),
+                        "results": results,
+                        "source": "swarm_index"
+                    }
+                }
+                
+                # Cache the result
+                try:
+                    cache.set("indexed_search_code", response, query=query, file_pattern=file_pattern, max_results=max_results)
+                except Exception:
+                    pass
+                
+                return response
+        except Exception as e:
+            logger.warning(f"SwarmIndex search failed, falling back: {e}")
+        
+        # Fallback to regular search_code
+        fallback_result = await self._search_code({
+            "query": query,
+            "file_pattern": file_pattern or "*",
+            "regex": False
+        })
+        
+        if fallback_result.get("success"):
+            # Convert to indexed format
+            matches = fallback_result.get("result", {}).get("matches", [])
+            results = [
+                {
+                    "path": m.get("file", ""),
+                    "snippet": f"Line {m.get('line', '?')}: {m.get('content', '')}",
+                    "rank": 0
+                }
+                for m in matches[:max_results]
+            ]
+            return {
+                "success": True,
+                "result": {
+                    "query": query,
+                    "file_pattern": file_pattern,
+                    "match_count": len(results),
+                    "results": results,
+                    "source": "fallback_search"
+                }
+            }
+        
+        return fallback_result
+
+    async def _indexed_related_files(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Find files related to a given path.
+        
+        Uses SwarmIndex to find:
+        - Files in the same directory
+        - Test files (test_foo.py, foo.test.ts, etc.)
+        - Similar base names (auth.py → auth_routes.py)
+        """
+        path = (args.get("path") or "").strip()
+        max_results = args.get("max_results", 10)
+        
+        if not path:
+            return {"success": False, "error": "path is required"}
+        
+        # Try to use SwarmIndex
+        try:
+            from core.swarm_index import get_swarm_index
+            index = get_swarm_index()
+            
+            if index:
+                related = await index.related_files(path, max_results)
+                
+                return {
+                    "success": True,
+                    "result": {
+                        "path": path,
+                        "related_count": len(related),
+                        "related_files": related,
+                        "source": "swarm_index"
+                    }
+                }
+        except Exception as e:
+            logger.warning(f"SwarmIndex related_files failed: {e}")
+        
+        # Fallback: simple directory listing
+        try:
+            from pathlib import Path as PathLib
+            path_obj = PathLib(path)
+            parent = path_obj.parent
+            base_name = path_obj.stem
+            
+            valid, resolved_parent, error = self._validate_path(str(parent) if str(parent) != "." else "shared")
+            if not valid:
+                return {"success": False, "error": error}
+            
+            related = []
+            if resolved_parent.exists() and resolved_parent.is_dir():
+                for item in resolved_parent.iterdir():
+                    if item.is_file() and item.name != path_obj.name:
+                        # Check for related names
+                        if base_name in item.stem or "test" in item.stem.lower():
+                            try:
+                                related.append(str(item.relative_to(self.scratch_dir)))
+                            except ValueError:
+                                related.append(str(item))
+            
+            return {
+                "success": True,
+                "result": {
+                    "path": path,
+                    "related_count": len(related[:max_results]),
+                    "related_files": related[:max_results],
+                    "source": "fallback_listing"
+                }
+            }
+        except Exception as e:
+            return {"success": False, "error": f"Failed to find related files: {e}"}
 
     async def _scaffold_project(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Create a project scaffold with common structure."""
@@ -2989,6 +3178,55 @@ TOOL_DEFINITIONS = [
             },
         },
     },
+    # ─────────────────────────────────────────────────────────────────────────
+    # INDEXED SEARCH TOOLS - Fast FTS-based code search
+    # ─────────────────────────────────────────────────────────────────────────
+    {
+        "type": "function",
+        "function": {
+            "name": "indexed_search_code",
+            "description": "Fast full-text search over indexed code files. More efficient than search_code for large projects. Use this first for code discovery.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search query (supports FTS5 syntax: quotes for exact, OR, NOT)"
+                    },
+                    "file_pattern": {
+                        "type": "string",
+                        "description": "Optional glob pattern to filter files (e.g., '*.py', '*.ts')"
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "Maximum results to return (default: 20)"
+                    }
+                },
+                "required": ["query"]
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "indexed_related_files",
+            "description": "Find files related to a given path: same directory, test files, similar names. Use to discover relevant context.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Path to find related files for"
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "Maximum results to return (default: 10)"
+                    }
+                },
+                "required": ["path"]
+            },
+        },
+    },
 ]
 
 
@@ -3039,6 +3277,8 @@ WORKER_TOOL_NAMES = {
     "get_context_summary",  # Get project context summary
     "delegate_subtask",  # Delegate work to other specialists
     "get_recent_changes",  # See recent file modifications
+    "indexed_search_code",  # Fast FTS-based code search
+    "indexed_related_files",  # Find related files (tests, same dir, etc.)
 }
 
 WORKER_TOOLS = [t for t in TOOL_DEFINITIONS if t["function"]["name"] in WORKER_TOOL_NAMES]
