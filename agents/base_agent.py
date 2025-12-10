@@ -32,8 +32,7 @@ from config.settings import (
     TOOL_MAX_TOKENS
 )
 
-# DEBUG: Check if API key was loaded
-print(f"[DEBUG] REQUESTY_API_KEY loaded: {bool(REQUESTY_API_KEY)} (len={len(REQUESTY_API_KEY) if REQUESTY_API_KEY else 0})")
+# API key loaded silently
 
 # API logging callback - set by dashboard_tui
 _api_log_callback = None
@@ -166,6 +165,9 @@ class BaseAgent(ABC):
                     return False  # Already responded, wait for new input
             
             # New trigger message, we should respond
+            # IMPORTANT: Set the ID immediately to prevent race conditions where
+            # multiple rounds could start before respond() completes
+            self._last_responded_to_human_id = last_trigger_msg_id
             logger.info(f"[{self.name}] Will respond to new trigger: {last_trigger_msg_id[:8]}")
             return True
         
@@ -384,7 +386,6 @@ Keep chat responses concise and focused on the task. Use the tools for the heavy
                 api_key = custom_key
 
         if not api_key:
-            print(f"[DEBUG] {self.name}: NO API KEY for provider '{provider}'!")  # DEBUG
             logger.error(
                 f"API key not configured for provider '{provider}'. "
                 "Set REQUESTY_API_KEY, configure a custom provider via /api, or provide ZAI_API_KEY / z.ai settings."
@@ -392,11 +393,8 @@ Keep chat responses concise and focused on the task. Use the tools for the heavy
             return {}
 
         if not api_base_url:
-            print(f"[DEBUG] {self.name}: NO API BASE URL for provider '{provider}'!")  # DEBUG
             logger.error(f"API base URL not configured for provider '{provider}'.")
             return {}
-        
-        print(f"[DEBUG] {self.name}: Provider={provider}, URL={api_base_url[:50]}..., Model={self.model}")  # DEBUG
 
         session = await self._get_session()
 
@@ -645,6 +643,7 @@ Keep chat responses concise and focused on the task. Use the tools for the heavy
         status_callback: Optional[Callable] = None,
         depth: int = 0,
         _failure_counts: Optional[Dict[str, int]] = None,
+        _call_history: Optional[List[str]] = None,
     ) -> str:
         """
         Execute tool calls and get final response.
@@ -667,9 +666,27 @@ Keep chat responses concise and focused on the task. Use the tools for the heavy
         if _failure_counts is None:
             _failure_counts = {}
         
+        if _call_history is None:
+            _call_history = []
+        
         if depth >= MAX_TOOL_DEPTH:
             logger.warning(f"[{self.name}] Max tool call depth ({MAX_TOOL_DEPTH}) reached, stopping")
             return f"[Completed {depth} tool operations. Reached limit. I will pause here. If the task is not finished, please say 'continue' to let me resume.]"
+        
+        # LOOP DETECTION: Check for repeated identical tool calls
+        for tool_call in tool_calls:
+            call_sig = f"{tool_call.get('function', {}).get('name', '')}:{tool_call.get('function', {}).get('arguments', '')}"
+            
+            # Count how many times this exact call has been made
+            repeat_count = _call_history.count(call_sig)
+            if repeat_count >= 2:
+                tool_name = tool_call.get('function', {}).get('name', '')
+                logger.warning(f"[{self.name}] LOOP DETECTED: {tool_name} called {repeat_count + 1} times with same args")
+                return (f"[STOPPED: You called {tool_name} {repeat_count + 1} times with the same arguments. "
+                       f"This is a loop. If you need data from a file, you already have it in context. "
+                       f"Execute assign_task() or complete_my_task() instead of reading again.]")
+            
+            _call_history.append(call_sig)
         
         logger.info(f"[{self.name}] Executing {len(tool_calls)} tool call(s) (depth={depth})")
         
@@ -699,8 +716,14 @@ Keep chat responses concise and focused on the task. Use the tools for the heavy
             
             logger.info(f"[{self.name}] Calling tool: {tool_name}({tool_args})")
             
+            # Pass status callback to tool executor for streaming command output
+            self._tool_executor.set_status_callback(status_callback)
+            
             # Execute tool
             result = await self._tool_executor.execute_tool(tool_name, tool_args)
+            
+            # Clear callback after execution
+            self._tool_executor.set_status_callback(None)
             
             logger.info(f"[{self.name}] Tool result: {str(result)[:500]}")
 
@@ -753,12 +776,20 @@ Keep chat responses concise and focused on the task. Use the tools for the heavy
         if not final_data:
             return "[Tool execution completed but couldn't generate response]"
         
+        # Broadcast token usage for tool follow-up calls
+        if status_callback and "usage" in final_data:
+            usage = final_data["usage"]
+            prompt_tokens = usage.get("prompt_tokens", 0)
+            completion_tokens = usage.get("completion_tokens", 0)
+            total_tokens = usage.get("total_tokens", 0)
+            await status_callback(f"📊 {self.name}: {prompt_tokens:,} in / {completion_tokens:,} out = {total_tokens:,} tokens")
+        
         choice = final_data.get("choices", [{}])[0]
         message = choice.get("message", {})
         
         # Check for more tool calls (recursive with depth limit)
         if message.get("tool_calls"):
-            return await self._handle_tool_calls(messages, message["tool_calls"], status_callback, depth + 1, _failure_counts)
+            return await self._handle_tool_calls(messages, message["tool_calls"], status_callback, depth + 1, _failure_counts, _call_history)
         
         return message.get("content", "")
     
@@ -797,18 +828,18 @@ Keep chat responses concise and focused on the task. Use the tools for the heavy
             path = tool_args.get("path", ".")
             return f"Listing {path}"
         elif tool_name == "search_code":
-            pattern = tool_args.get("pattern", "")[:20]
-            return f"Searching: {pattern}..."
+            pattern = tool_args.get("pattern", "")
+            return f"Searching: {pattern}"
         elif tool_name == "run_command":
-            cmd = tool_args.get("command", "")[:30]
-            return f"Running: {cmd}..."
+            cmd = tool_args.get("command", "")
+            return f"Running: {cmd}"
         elif tool_name == "spawn_worker":
             role = tool_args.get("role", "agent")
             return f"Spawning {role}"
         elif tool_name == "assign_task":
             agent = tool_args.get("agent_name", "agent")
-            task = tool_args.get("task_description", "")[:25]
-            return f"Task → {agent}: {task}..."
+            task = tool_args.get("task_description", "")
+            return f"Task → {agent}: {task}"
         elif tool_name == "get_swarm_state":
             return "Checking swarm status"
         elif tool_name == "get_project_structure":
@@ -840,22 +871,46 @@ Keep chat responses concise and focused on the task. Use the tools for the heavy
         Returns:
             A new Message from this agent, or None if not responding
         """
-        # Check if we should respond
-        if not self.should_respond():
-            logger.debug(f"Agent {self.name} chose not to respond this round")
+        # Guard against concurrent API calls from the same agent
+        if getattr(self, '_responding', False):
+            logger.debug(f"Agent {self.name} already responding, skipping duplicate call")
             return None
+        self._responding = True
         
-        print(f"[DEBUG] {self.name}: Building context...")  # DEBUG
+        try:
+            return await self._do_respond(global_history, status_callback)
+        finally:
+            self._responding = False
+    
+    async def _do_respond(
+        self, 
+        global_history: List[Message],
+        status_callback: Optional[Callable] = None
+    ) -> Optional[Message]:
+        """Internal respond implementation.
+
+        NOTE: Orchestrators (Chatroom, CLI) are responsible for calling
+        should_respond() before scheduling this agent. We deliberately do
+        NOT call should_respond() again here to avoid double-trigger bugs
+        where the same HUMAN message is seen twice in one round.
+        """
+
         # Build context
         context = await self._build_context(global_history)
-        print(f"[DEBUG] {self.name}: Context built, {len(context)} messages. Calling API...")  # DEBUG
         
         # Call API with tools enabled
         data = await self._call_api(context, use_tools=self.tools_enabled)
-        print(f"[DEBUG] {self.name}: API returned, data={bool(data)}")  # DEBUG
         
         if not data:
             return None
+        
+        # Broadcast token usage if status_callback is available
+        if status_callback and "usage" in data:
+            usage = data["usage"]
+            prompt_tokens = usage.get("prompt_tokens", 0)
+            completion_tokens = usage.get("completion_tokens", 0)
+            total_tokens = usage.get("total_tokens", 0)
+            await status_callback(f"📊 {self.name}: {prompt_tokens:,} in / {completion_tokens:,} out = {total_tokens:,} tokens")
         
         choice = data.get("choices", [{}])[0]
         message = choice.get("message", {})

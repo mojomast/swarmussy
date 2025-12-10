@@ -19,7 +19,8 @@ from config.settings import LOG_FORMAT, validate_config, AVAILABLE_MODELS
 from core.chatroom import Chatroom
 from core.models import Message, MessageRole
 from core.project_manager import get_project_manager, Project
-from agents import create_all_default_agents
+from core.session_controller import SessionController, get_session_controller
+from agents import create_all_default_agents, AGENT_CLASSES
 
 
 # ANSI color codes for terminal
@@ -961,6 +962,674 @@ class InteractiveChatroom:
             self.print_system("Chatroom closed. Goodbye!")
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# SWARM CLI - Uses SessionController for TUI parity
+# ─────────────────────────────────────────────────────────────────────────────
+
+class SwarmCLI:
+    """
+    TUI-lite CLI mode using SessionController.
+    
+    Provides feature parity with the TUI dashboard while using a simple
+    text-based interface. Uses the same SessionController that the TUI uses.
+    """
+    
+    def __init__(self):
+        self.controller = SessionController()
+        self.running = True
+        self.log_file = None
+    
+    def setup_logging(self):
+        """Configure logging to file only."""
+        log_dir = Path(__file__).parent / "logs"
+        log_dir.mkdir(exist_ok=True)
+        
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.log_file = log_dir / f"cli_{timestamp}.log"
+        
+        root_logger = logging.getLogger()
+        root_logger.setLevel(logging.DEBUG)
+        root_logger.handlers.clear()
+        
+        file_handler = logging.FileHandler(self.log_file, encoding='utf-8')
+        file_handler.setLevel(logging.DEBUG)
+        file_handler.setFormatter(logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        ))
+        root_logger.addHandler(file_handler)
+        
+        return self.log_file
+    
+    def get_color(self, name: str) -> str:
+        """Get color for a sender name."""
+        return AGENT_COLORS.get(name, Colors.WHITE)
+    
+    def print_system(self, text: str):
+        """Print a system message."""
+        print(f"{Colors.SYSTEM}>> {text}{Colors.RESET}")
+    
+    def print_message(self, message: Message):
+        """Print a chat message with colors."""
+        color = self.get_color(message.sender_name)
+        timestamp = message.timestamp.strftime("%H:%M")
+        
+        if message.sender_id == "status":
+            # Status messages are dimmer
+            print(f"{Colors.SYSTEM}   {message.content}{Colors.RESET}")
+            return
+        
+        if message.role == MessageRole.SYSTEM:
+            print(f"{Colors.DIM}[{timestamp}]{Colors.RESET} {Colors.YELLOW}⚙️ {message.content}{Colors.RESET}")
+        elif message.role == MessageRole.HUMAN:
+            if message.sender_name == self.controller.username:
+                print(f"{Colors.DIM}[{timestamp}]{Colors.RESET} {Colors.LIME}{Colors.BOLD}👤 {message.sender_name}:{Colors.RESET} {message.content}")
+            else:
+                print(f"{Colors.DIM}[{timestamp}]{Colors.RESET} {Colors.GREEN}{Colors.BOLD}👤 {message.sender_name}:{Colors.RESET} {message.content}")
+        else:
+            print(f"{Colors.DIM}[{timestamp}]{Colors.RESET} {color}{Colors.BOLD}{message.sender_name}:{Colors.RESET} {Colors.TEXT}{message.content}{Colors.RESET}")
+    
+    def on_status(self, text: str):
+        """Handle status updates."""
+        print(f"{Colors.SYSTEM}   {text}{Colors.RESET}")
+    
+    def print_header(self):
+        """Print the CLI header."""
+        print()
+        print(f"{Colors.BOLD}{Colors.CYAN}{'='*60}{Colors.RESET}")
+        print(f"{Colors.BOLD}{Colors.CYAN}  🚀 AGENT SWARM CLI{Colors.RESET}")
+        print(f"{Colors.BOLD}{Colors.CYAN}{'='*60}{Colors.RESET}")
+        print()
+        if self.controller.is_devussy_mode:
+            print(f"{Colors.MAGENTA}🔮 DEVUSSY MODE - Following generated devplan{Colors.RESET}")
+        self.print_system("Commands: /help for all commands")
+        self.print_system(f"Logging to: {self.log_file}")
+        print()
+    
+    def select_project_and_options(self) -> tuple:
+        """Interactive project selection with devussy option."""
+        from core.settings_manager import get_settings
+        
+        pm = get_project_manager()
+        projects = pm.list_projects()
+        last_project = pm.get_last_project()
+        settings = get_settings()
+        devussy_mode = False
+        
+        print()
+        print(f"{Colors.BOLD}{Colors.CYAN}=== SELECT PROJECT ==={Colors.RESET}")
+        print()
+        
+        if projects:
+            for i, proj in enumerate(projects, 1):
+                marker = f" {Colors.GREEN}(last used){Colors.RESET}" if proj.name == last_project else ""
+                print(f"  {Colors.YELLOW}{i}.{Colors.RESET} {proj.name}{marker}")
+        else:
+            print(f"  {Colors.DIM}No existing projects{Colors.RESET}")
+        
+        print(f"  {Colors.GREEN}N.{Colors.RESET} Create new project")
+        print()
+        
+        choice = input("Enter choice (or press Enter for default): ").strip()
+        
+        if choice.upper() == "N":
+            name = input("Project name: ").strip() or "default"
+            desc = input("Description (optional): ").strip()
+            project = pm.create_project(name, desc)
+        elif choice.isdigit() and 0 < int(choice) <= len(projects):
+            project = projects[int(choice) - 1]
+        elif last_project and pm.project_exists(last_project):
+            project = pm.load_project(last_project)
+        elif projects:
+            project = projects[0]
+        else:
+            project = pm.create_project("default")
+        
+        pm.set_current(project)
+        print()
+        self.print_system(f"Using project: {project.name}")
+        
+        # Check for devussy
+        print()
+        print(f"{Colors.BOLD}{Colors.MAGENTA}=== DEVUSSY PIPELINE ==={Colors.RESET}")
+        print(f"{Colors.DIM}Generate a structured development plan before starting.{Colors.RESET}")
+        
+        try:
+            from core.devussy_integration import (
+                check_devussy_available, 
+                run_devussy_pipeline_sync, 
+                load_devplan_for_swarm,
+                select_devussy_model,
+            )
+            devussy_available = check_devussy_available()
+        except ImportError:
+            devussy_available = False
+        
+        if devussy_available:
+            existing_devplan = load_devplan_for_swarm(Path(project.root))
+            
+            if existing_devplan and existing_devplan.get("has_devplan"):
+                print(f"{Colors.GREEN}✓ Existing devplan found{Colors.RESET}")
+                devussy_choice = input("Run Devussy pipeline? [y/N/use existing=Enter]: ").strip().lower()
+                
+                if devussy_choice in ("y", "yes"):
+                    devussy_model = select_devussy_model()
+                    saved_model = devussy_model or settings.get("devussy_model")
+                    if devussy_model:
+                        settings.set("devussy_model", devussy_model)
+                    
+                    print(f"\n{Colors.MAGENTA}Starting Devussy pipeline...{Colors.RESET}\n")
+                    success, message = run_devussy_pipeline_sync(
+                        Path(project.root), 
+                        verbose=False,
+                        model=saved_model,
+                    )
+                    if success:
+                        print(f"{Colors.GREEN}✓ {message}{Colors.RESET}")
+                        devussy_mode = True
+                    else:
+                        print(f"{Colors.RED}✗ {message}{Colors.RESET}")
+                elif devussy_choice in ("n", "no"):
+                    print(f"{Colors.DIM}Skipping devussy{Colors.RESET}")
+                else:
+                    print(f"{Colors.GREEN}✓ Using existing devplan{Colors.RESET}")
+                    devussy_mode = True
+            else:
+                devussy_choice = input("Run Devussy pipeline to create a plan? [y/N]: ").strip().lower()
+                if devussy_choice in ("y", "yes"):
+                    devussy_model = select_devussy_model()
+                    saved_model = devussy_model or settings.get("devussy_model")
+                    if devussy_model:
+                        settings.set("devussy_model", devussy_model)
+                    
+                    print(f"\n{Colors.MAGENTA}Starting Devussy pipeline...{Colors.RESET}\n")
+                    success, message = run_devussy_pipeline_sync(
+                        Path(project.root), 
+                        verbose=False,
+                        model=saved_model,
+                    )
+                    if success:
+                        print(f"{Colors.GREEN}✓ {message}{Colors.RESET}")
+                        devussy_mode = True
+                    else:
+                        print(f"{Colors.RED}✗ {message}{Colors.RESET}")
+        else:
+            print(f"{Colors.YELLOW}Devussy not available{Colors.RESET}")
+        
+        # Username
+        print()
+        saved_username = settings.get("username", "You")
+        username = input(f"Your name [{saved_username}]: ").strip()
+        if username:
+            settings.set("username", username[:20])
+        else:
+            username = saved_username
+        
+        # Load history
+        default_load = settings.get("load_previous_history", True)
+        default_label = "Y/n" if default_load else "y/N"
+        choice = input(f"Load previous messages? [{default_label}]: ").strip().lower()
+        if choice in ("y", "yes"):
+            load_history = True
+        elif choice in ("n", "no"):
+            load_history = False
+        else:
+            load_history = default_load
+        
+        settings.set("load_previous_history", load_history)
+        settings.set("devussy_mode", devussy_mode)
+        
+        return project, username[:20], load_history, devussy_mode
+    
+    def show_help(self):
+        """Show help menu."""
+        print()
+        print(f"{Colors.BOLD}{Colors.CYAN}=== COMMANDS ==={Colors.RESET}")
+        print(f"  {Colors.YELLOW}Chat:{Colors.RESET}")
+        print(f"    {Colors.GREEN}/help{Colors.RESET}         - Show this help")
+        print(f"    {Colors.GREEN}/clear{Colors.RESET}        - Clear chat history")
+        print(f"    {Colors.GREEN}go{Colors.RESET}            - Dispatch next task (auto/no tokens)")
+        print()
+        print(f"  {Colors.YELLOW}Agents:{Colors.RESET}")
+        print(f"    {Colors.GREEN}/agents{Colors.RESET}       - List active agents")
+        print(f"    {Colors.GREEN}/spawn{Colors.RESET} <role> - Spawn new agent")
+        print(f"    {Colors.GREEN}/roles{Colors.RESET}        - List available roles")
+        print(f"    {Colors.GREEN}/stop{Colors.RESET}         - Stop all in-progress tasks")
+        print(f"    {Colors.GREEN}/halt{Colors.RESET} <name>  - Halt a specific agent")
+        print()
+        print(f"  {Colors.YELLOW}Project:{Colors.RESET}")
+        print(f"    {Colors.GREEN}/project{Colors.RESET}      - Show current project")
+        print(f"    {Colors.GREEN}/status{Colors.RESET}       - Show swarm status")
+        print(f"    {Colors.GREEN}/tasks{Colors.RESET}        - Show task list")
+        print(f"    {Colors.GREEN}/plan{Colors.RESET}         - Show devplan/master plan")
+        print(f"    {Colors.GREEN}/files{Colors.RESET}        - Show project files")
+        print()
+        print(f"  {Colors.YELLOW}Settings:{Colors.RESET}")
+        print(f"    {Colors.GREEN}/settings{Colors.RESET}     - Open settings menu")
+        print(f"    {Colors.GREEN}/name{Colors.RESET} <n>     - Set your display name")
+        print(f"    {Colors.GREEN}/api{Colors.RESET}          - View/change API provider")
+        print(f"    {Colors.GREEN}/quit{Colors.RESET}         - Exit")
+        print()
+    
+    def show_agents(self):
+        """Show list of agents."""
+        agents = self.controller.get_agents()
+        print()
+        print(f"{Colors.BOLD}{Colors.CYAN}=== ACTIVE AGENTS ==={Colors.RESET}")
+        if not agents:
+            print(f"  {Colors.DIM}No agents{Colors.RESET}")
+        else:
+            for agent in agents:
+                color = self.get_color(agent["name"])
+                status = f"{Colors.GREEN}[WORKING]{Colors.RESET}" if agent["status"] == "working" else f"{Colors.DIM}[IDLE]{Colors.RESET}"
+                print(f"  {color}•{Colors.RESET} {color}{agent['name']}{Colors.RESET} {status}")
+                print(f"    {Colors.DIM}Model: {agent['model']}{Colors.RESET}")
+                if agent.get("current_task_description"):
+                    desc = agent["current_task_description"][:50]
+                    print(f"    {Colors.YELLOW}Task: {desc}...{Colors.RESET}")
+        print()
+    
+    def show_tasks(self):
+        """Show task list."""
+        tasks = self.controller.get_tasks()
+        print()
+        print(f"{Colors.BOLD}{Colors.CYAN}=== TASKS ==={Colors.RESET}")
+        if not tasks:
+            print(f"  {Colors.DIM}No tasks yet{Colors.RESET}")
+        else:
+            status_colors = {
+                "pending": Colors.YELLOW, 
+                "in_progress": Colors.BLUE, 
+                "completed": Colors.GREEN, 
+                "failed": Colors.RED
+            }
+            status_icons = {
+                "pending": "⏳",
+                "in_progress": "🔄",
+                "completed": "✅",
+                "failed": "❌"
+            }
+            for task in tasks[-15:]:
+                color = status_colors.get(task["status"], Colors.WHITE)
+                icon = status_icons.get(task["status"], "?")
+                desc = task["description"][:60]
+                print(f"  {color}{icon} [{task['status']}]{Colors.RESET} {desc}...")
+        print()
+    
+    def show_status(self):
+        """Show swarm status."""
+        status = self.controller.get_status()
+        print()
+        print(f"{Colors.BOLD}{Colors.CYAN}=== SWARM STATUS ==={Colors.RESET}")
+        print(f"  Project: {Colors.GREEN}{status.get('project_name', 'None')}{Colors.RESET}")
+        print(f"  Devussy Mode: {Colors.MAGENTA if status.get('devussy_mode') else Colors.DIM}{'Yes' if status.get('devussy_mode') else 'No'}{Colors.RESET}")
+        print(f"  Round: {status.get('round_number', 0)}")
+        print(f"  Messages: {status.get('message_count', 0)}")
+        print(f"  Agents: {status.get('agent_count', 0)}")
+        print(f"  Total Tokens: {Colors.YELLOW}{status.get('total_tokens', 0):,}{Colors.RESET}")
+        print(f"  API Calls: {status.get('api_calls', 0)}")
+        print()
+    
+    def show_plan(self):
+        """Show devplan or master plan."""
+        plan = self.controller.get_devplan_summary()
+        print()
+        print(f"{Colors.BOLD}{Colors.CYAN}=== DEVPLAN / MASTER PLAN ==={Colors.RESET}")
+        print(plan)
+        print()
+    
+    def show_files(self):
+        """Show project files."""
+        from config.settings import get_scratch_dir
+        
+        scratch_dir = get_scratch_dir()
+        
+        if not scratch_dir.exists():
+            scratch_dir.mkdir(parents=True, exist_ok=True)
+            self.print_system("Scratch folder created (was empty)")
+            return
+        
+        print()
+        print(f"{Colors.BOLD}{Colors.CYAN}=== PROJECT FILES ==={Colors.RESET}")
+        print(f"{Colors.DIM}{scratch_dir}{Colors.RESET}")
+        print()
+        
+        def print_tree(path, prefix=""):
+            try:
+                items = sorted(path.iterdir(), key=lambda x: (not x.is_dir(), x.name))
+            except PermissionError:
+                return
+            
+            for i, item in enumerate(items[:50]):  # Limit items
+                is_last = i == len(items) - 1 or i == 49
+                connector = "└── " if is_last else "├── "
+                
+                if item.is_dir():
+                    print(f"{prefix}{connector}{Colors.CYAN}{item.name}/{Colors.RESET}")
+                    if i < 20:  # Only recurse first 20
+                        extension = "    " if is_last else "│   "
+                        print_tree(item, prefix + extension)
+                else:
+                    size = item.stat().st_size
+                    size_str = f"{size}B" if size < 1024 else f"{size//1024}KB"
+                    print(f"{prefix}{connector}{item.name} {Colors.DIM}({size_str}){Colors.RESET}")
+        
+        if any(scratch_dir.iterdir()):
+            print_tree(scratch_dir)
+        else:
+            print(f"  {Colors.DIM}(empty){Colors.RESET}")
+        print()
+    
+    def show_settings_menu(self):
+        """Show settings menu."""
+        from core.settings_manager import get_settings
+        from config.settings import AVAILABLE_MODELS
+        
+        settings = get_settings()
+        
+        while True:
+            print()
+            print(f"{Colors.BOLD}{Colors.CYAN}=== SETTINGS ==={Colors.RESET}")
+            print(f"  {Colors.YELLOW}1.{Colors.RESET} Username: {Colors.GREEN}{settings.get('username', 'You')}{Colors.RESET}")
+            print(f"  {Colors.YELLOW}2.{Colors.RESET} Auto Chat: {Colors.GREEN}{'ON' if settings.get('auto_chat', True) else 'OFF'}{Colors.RESET}")
+            print(f"  {Colors.YELLOW}3.{Colors.RESET} Tools Enabled: {Colors.GREEN}{'ON' if settings.get('tools_enabled', True) else 'OFF'}{Colors.RESET}")
+            print(f"  {Colors.YELLOW}4.{Colors.RESET} Architect Model: {Colors.DIM}{settings.get('architect_model', 'default')}{Colors.RESET}")
+            print(f"  {Colors.YELLOW}5.{Colors.RESET} Swarm Model: {Colors.DIM}{settings.get('swarm_model', 'default')}{Colors.RESET}")
+            print(f"  {Colors.YELLOW}6.{Colors.RESET} Max Tokens: {Colors.DIM}{settings.get('max_tokens', 16000)}{Colors.RESET}")
+            print(f"  {Colors.YELLOW}0.{Colors.RESET} Back")
+            print()
+            
+            choice = input(f"{Colors.BOLD}Enter choice: {Colors.RESET}").strip()
+            
+            if choice == "0" or choice == "":
+                break
+            elif choice == "1":
+                new_name = input("Enter username: ").strip()
+                if new_name:
+                    settings.set("username", new_name[:20])
+                    self.print_system(f"Username set to {new_name[:20]}")
+            elif choice == "2":
+                settings.set("auto_chat", not settings.get("auto_chat", True))
+                self.print_system(f"Auto chat {'enabled' if settings.get('auto_chat') else 'disabled'}")
+            elif choice == "3":
+                settings.set("tools_enabled", not settings.get("tools_enabled", True))
+                self.print_system(f"Tools {'enabled' if settings.get('tools_enabled') else 'disabled'}")
+            elif choice == "4":
+                print(f"Available: {', '.join(AVAILABLE_MODELS[:5])}...")
+                new_model = input("Architect model: ").strip()
+                if new_model in AVAILABLE_MODELS:
+                    settings.set("architect_model", new_model)
+                    self.print_system(f"Architect model set to {new_model}")
+            elif choice == "5":
+                print(f"Available: {', '.join(AVAILABLE_MODELS[:5])}...")
+                new_model = input("Swarm model: ").strip()
+                if new_model in AVAILABLE_MODELS:
+                    settings.set("swarm_model", new_model)
+                    self.print_system(f"Swarm model set to {new_model}")
+            elif choice == "6":
+                try:
+                    new_tokens = int(input("Max tokens: ").strip())
+                    if 1000 <= new_tokens <= 100000:
+                        settings.set("max_tokens", new_tokens)
+                        self.print_system(f"Max tokens set to {new_tokens}")
+                except ValueError:
+                    self.print_system("Invalid number")
+    
+    async def handle_command(self, line: str):
+        """Handle a / command."""
+        from core.settings_manager import get_settings
+        from config.settings import REQUESTY_API_BASE_URL
+        
+        parts = line.split(maxsplit=1)
+        cmd = parts[0].lower()
+        arg = parts[1] if len(parts) > 1 else ""
+        
+        if cmd in ["/quit", "/exit", "/q"]:
+            self.running = False
+            self.print_system("Shutting down...")
+        
+        elif cmd == "/help" or cmd == "/?":
+            self.show_help()
+        
+        elif cmd == "/agents" or cmd == "/bots":
+            self.show_agents()
+        
+        elif cmd == "/tasks":
+            self.show_tasks()
+        
+        elif cmd == "/status":
+            self.show_status()
+        
+        elif cmd == "/plan":
+            self.show_plan()
+        
+        elif cmd == "/files":
+            self.show_files()
+        
+        elif cmd == "/settings":
+            self.show_settings_menu()
+        
+        elif cmd == "/spawn":
+            if arg and arg in AGENT_CLASSES:
+                agent = await self.controller.spawn_agent(arg)
+                if agent:
+                    self.print_system(f"{agent.name} has joined!")
+            else:
+                self.print_system(f"Usage: /spawn <role>")
+                self.print_system(f"Roles: {', '.join(AGENT_CLASSES.keys())}")
+        
+        elif cmd == "/roles":
+            print()
+            print(f"{Colors.BOLD}{Colors.CYAN}=== AVAILABLE ROLES ==={Colors.RESET}")
+            for role in AGENT_CLASSES.keys():
+                print(f"  {Colors.GREEN}{role}{Colors.RESET}")
+            print()
+        
+        elif cmd == "/stop":
+            stopped = await self.controller.stop_current()
+            if stopped:
+                self.print_system(f"Stopped {stopped} task(s)")
+            else:
+                self.print_system("No tasks to stop")
+        
+        elif cmd == "/halt":
+            if arg:
+                success = await self.controller.halt_agent(arg)
+                if not success:
+                    self.print_system(f"Could not halt agent: {arg}")
+            else:
+                self.print_system("Usage: /halt <agent_name>")
+        
+        elif cmd == "/clear":
+            if self.controller.chatroom:
+                self.controller.chatroom.state.messages.clear()
+            self.print_system("Chat history cleared")
+        
+        elif cmd == "/project":
+            if self.controller.project:
+                info = self.controller.project.get_info()
+                print()
+                print(f"{Colors.BOLD}{Colors.CYAN}=== CURRENT PROJECT ==={Colors.RESET}")
+                print(f"  Name: {Colors.GREEN}{info['name']}{Colors.RESET}")
+                print(f"  Path: {Colors.DIM}{info['path']}{Colors.RESET}")
+                print(f"  Has Master Plan: {'Yes' if info['has_master_plan'] else 'No'}")
+                print()
+            else:
+                self.print_system("No project selected")
+        
+        elif cmd == "/name":
+            if arg:
+                settings = get_settings()
+                settings.set("username", arg[:20])
+                self.print_system(f"Name set to {arg[:20]}")
+            else:
+                self.print_system(f"Your name is: {self.controller.username}")
+        
+        elif cmd in ("/api", "/provider"):
+            settings = get_settings()
+            
+            if not arg:
+                custom_base = (settings.get("api_base_url", "") or "").strip()
+                custom_key = (settings.get("api_key", "") or "").strip()
+                active_base = custom_base or REQUESTY_API_BASE_URL
+                
+                print()
+                print(f"{Colors.BOLD}{Colors.CYAN}=== API PROVIDER ==={Colors.RESET}")
+                print(f"  Active URL: {active_base}")
+                print(f"  Source: {'Custom' if custom_base else 'Requesty (.env)'}")
+                print()
+                print("  Usage: /api <base_url> <api_key>")
+                print("         /api reset")
+                print()
+            elif arg.lower() in ("reset", "clear"):
+                settings.set("api_base_url", "")
+                settings.set("api_key", "")
+                self.print_system("API provider reset to Requesty")
+            else:
+                url_parts = arg.split()
+                if len(url_parts) >= 2:
+                    settings.set("api_base_url", url_parts[0])
+                    settings.set("api_key", " ".join(url_parts[1:]))
+                    self.print_system("Custom API provider configured")
+                else:
+                    self.print_system("Usage: /api <base_url> <api_key>")
+        
+        else:
+            self.print_system(f"Unknown command: {cmd}. Type /help for commands")
+    
+    async def handle_user_input(self):
+        """Handle user input using threading to avoid blocking."""
+        import threading
+        import queue
+        
+        input_queue = queue.Queue()
+        
+        def input_thread():
+            while self.running:
+                try:
+                    line = input()
+                    input_queue.put(line)
+                except EOFError:
+                    break
+                except Exception:
+                    break
+        
+        thread = threading.Thread(target=input_thread, daemon=True)
+        thread.start()
+        
+        while self.running:
+            try:
+                try:
+                    line = input_queue.get_nowait()
+                except queue.Empty:
+                    await asyncio.sleep(0.1)
+                    continue
+                
+                line = line.strip()
+                if not line:
+                    continue
+                
+                # Handle commands
+                if line.startswith("/"):
+                    await self.handle_command(line)
+                else:
+                    # Send as chat message (includes "go" command handling)
+                    await self.controller.send_message(line)
+                    
+            except Exception as e:
+                logging.error(f"Input error: {e}")
+    
+    async def run_background_loop(self):
+        """Background loop to advance the swarm when auto_chat is enabled."""
+        from core.settings_manager import get_settings
+        
+        while self.running:
+            await asyncio.sleep(2.0)  # Check every 2 seconds
+            
+            if not self.running:
+                break
+            
+            settings = get_settings()
+            if not settings.get("auto_chat", True):
+                continue
+            
+            if self.controller.is_processing:
+                continue
+            
+            # Check if there are working agents or open tasks
+            tasks = self.controller.get_tasks()
+            has_open = any(t["status"] in ("pending", "in_progress") for t in tasks)
+            agents = self.controller.get_agents()
+            has_working = any(a["status"] == "working" for a in agents)
+            
+            if has_open or has_working:
+                await self.controller.run_round()
+    
+    async def run(self):
+        """Run the CLI."""
+        # Setup
+        self.setup_logging()
+        
+        # Interactive setup
+        if not setup_env_interactive():
+            return
+        
+        # Validate config
+        is_valid, errors = validate_config()
+        if not is_valid:
+            for error in errors:
+                self.print_system(f"Error: {error}")
+            return
+        
+        # Project selection with devussy option
+        project, username, load_history, devussy_mode = self.select_project_and_options()
+        
+        # Set up callbacks
+        self.controller.on_message = self.print_message
+        self.controller.on_status = self.on_status
+        
+        # Initialize session
+        await self.controller.initialize(
+            project=project,
+            username=username,
+            load_history=load_history,
+            devussy_mode=devussy_mode
+        )
+        
+        # Print header
+        self.print_header()
+        
+        # Show project info
+        self.print_system(f"Project: {project.name}")
+        
+        # Show agents
+        agents = self.controller.get_agents()
+        self.print_system(f"Agents joined: {len(agents)}")
+        for agent in agents:
+            color = self.get_color(agent["name"])
+            print(f"  {color}•{Colors.RESET} {color}{agent['name']}{Colors.RESET}")
+        print()
+        
+        if devussy_mode:
+            self.print_system("Type 'go' to dispatch the first task!")
+        else:
+            self.print_system("Type your message to chat with the swarm.")
+        print()
+        
+        # Run tasks
+        try:
+            input_task = asyncio.create_task(self.handle_user_input())
+            background_task = asyncio.create_task(self.run_background_loop())
+            
+            await input_task
+            background_task.cancel()
+            
+        except KeyboardInterrupt:
+            self.print_system("Interrupted...")
+        finally:
+            await self.controller.shutdown()
+            self.print_system("Session closed. Goodbye!")
+
+
 def setup_env_interactive():
     """Interactive .env setup if needed."""
     from dotenv import load_dotenv
@@ -1026,7 +1695,7 @@ LOG_LEVEL=INFO
 
 
 def main():
-    """Entry point - launches dashboard by default."""
+    """Entry point - launches TUI dashboard by default."""
     import argparse
     
     # Enable ANSI colors on Windows
@@ -1045,24 +1714,59 @@ def main():
     parser.add_argument(
         "--cli", 
         action="store_true", 
-        help="Use the basic CLI interface instead of the dashboard"
+        help="Use the CLI interface with full features (devussy, go command, etc.)"
+    )
+    parser.add_argument(
+        "--cli-legacy",
+        action="store_true",
+        help="Use the legacy basic CLI interface"
     )
     parser.add_argument(
         "--tui",
         action="store_true",
         help="Use the Textual TUI dashboard (recommended, requires: pip install textual)"
     )
+    parser.add_argument(
+        "--rich",
+        action="store_true",
+        help="Use the Rich dashboard (legacy)"
+    )
     args = parser.parse_args()
     
     if args.cli:
-        # Use the basic CLI interface
+        # Use the new SwarmCLI with full features (devussy, go command, etc.)
+        cli = SwarmCLI()
+        try:
+            asyncio.run(cli.run())
+        except KeyboardInterrupt:
+            pass
+    elif args.cli_legacy:
+        # Use the legacy basic CLI interface
         chat = InteractiveChatroom()
         try:
             asyncio.run(chat.run())
         except KeyboardInterrupt:
             pass
-    elif args.tui:
-        # Use the new Textual TUI dashboard
+    elif args.rich:
+        # Use the Rich dashboard (legacy)
+        from dashboard import DashboardUI, RICH_AVAILABLE
+        
+        if not RICH_AVAILABLE:
+            print("Rich library not installed. Run: pip install rich")
+            print("Falling back to CLI mode...")
+            cli = SwarmCLI()
+            try:
+                asyncio.run(cli.run())
+            except KeyboardInterrupt:
+                pass
+        else:
+            dashboard = DashboardUI()
+            try:
+                asyncio.run(dashboard.run())
+            except KeyboardInterrupt:
+                pass
+    else:
+        # Default: Use the Textual TUI dashboard
         try:
             from dashboard_tui import main as tui_main
             tui_main()
@@ -1070,27 +1774,9 @@ def main():
             print(f"Textual not installed. Run: pip install textual")
             print(f"Error: {e}")
             print("Falling back to CLI mode...")
-            chat = InteractiveChatroom()
+            cli = SwarmCLI()
             try:
-                asyncio.run(chat.run())
-            except KeyboardInterrupt:
-                pass
-    else:
-        # Launch Rich dashboard by default
-        from dashboard import DashboardUI, RICH_AVAILABLE
-        
-        if not RICH_AVAILABLE:
-            print("Rich library not installed. Run: pip install rich")
-            print("Falling back to CLI mode...")
-            chat = InteractiveChatroom()
-            try:
-                asyncio.run(chat.run())
-            except KeyboardInterrupt:
-                pass
-        else:
-            dashboard = DashboardUI()
-            try:
-                asyncio.run(dashboard.run())
+                asyncio.run(cli.run())
             except KeyboardInterrupt:
                 pass
 

@@ -57,6 +57,7 @@ class Chatroom:
         self.on_tool_call: Optional[Callable[[str, str, str], None]] = None
         # Control whether history is loaded from disk during initialize
         self._load_history_on_init = load_history
+        self._max_in_memory_messages = 500
     
     async def initialize(self, agents: Optional[List[BaseAgent]] = None):
         """
@@ -238,6 +239,21 @@ class Chatroom:
         target_agent.status = AgentStatus.WORKING
         target_agent.current_task_id = task.id
         setattr(target_agent, "current_task_description", task_description)
+        
+        # Update orchestrator for real-time dashboard
+        try:
+            from core.swarm_orchestrator import get_orchestrator
+            import re
+            orchestrator = get_orchestrator()
+            if orchestrator:
+                # Extract task number from description (e.g., "Task 1.1: Title")
+                task_num_match = re.search(r'Task\s+(\d+\.\d+)', task_description)
+                if task_num_match:
+                    orch_task_id = task_num_match.group(1)
+                    orchestrator.mark_task_dispatched(orch_task_id, target_agent.name)
+                    logger.debug(f"Orchestrator: task {orch_task_id} dispatched to {target_agent.name}")
+        except Exception as e:
+            logger.debug(f"Could not update orchestrator on dispatch: {e}")
 
         # Announce assignment or reassignment with status
         if reassigned and previous_owner_name:
@@ -246,13 +262,13 @@ class Chatroom:
             )
             msg_text = (
                 f"📋 Task Reassigned from {previous_owner_name} to {target_agent.name}: "
-                f"{task_description[:100]}{'...' if len(task_description) > 100 else ''}"
+                f"{task_description}"
             )
         else:
             await self._broadcast_status(f"📋 Assigning task to {target_agent.name}...")
             msg_text = (
                 f"📋 Task Assigned to {target_agent.name}: "
-                f"{task_description[:100]}{'...' if len(task_description) > 100 else ''}"
+                f"{task_description}"
             )
 
         assignment_msg = Message(
@@ -309,11 +325,13 @@ class Chatroom:
     async def _broadcast_message(self, message: Message):
         """
         Broadcast a message to all callbacks and add to history.
-        
+
         Args:
             message: The message to broadcast
         """
         self.state.add_message(message)
+        if len(self.state.messages) > self._max_in_memory_messages:
+            self.state.messages = self.state.messages[-self._max_in_memory_messages:]
         
         for callback in self._message_callbacks:
             try:

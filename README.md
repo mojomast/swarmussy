@@ -85,7 +85,7 @@ python main.py --cli
 3. DevOps creates deployment configs
 4. All artifacts are in `scratch/shared/`
 
-## Dashboard Commands
+## Dashboard Commands (TUI)
 
 | Command | Description |
 |---------|-------------|
@@ -103,6 +103,19 @@ python main.py --cli
 | `/api [base_url api_key]` | View or change API provider/base URL and key |
 | `/clear` | Clear chat history |
 | `/quit` | Exit (Ctrl+Q) |
+
+## CLI Commands (`--cli` mode)
+
+| Command | Description |
+|---------|-------------|
+| `go` | Dispatch next task(s) via AutoDispatcher (up to 3 in parallel) |
+| `stop` | Stop all in-progress tasks |
+| `status` | Show swarm status summary |
+| `tasks` | List all tasks with status |
+| `agents` | List all agents with status |
+| `spawn <role>` | Spawn a new agent (e.g., `spawn backend_dev`) |
+| `help` | Show available commands |
+| `quit` / `exit` | Exit the CLI |
 
 ## Keyboard Shortcuts (TUI Mode)
 
@@ -124,7 +137,7 @@ python main.py --cli
 
 - **TUI Mode** (`--tui`, recommended) - Full Textual dashboard with panels, settings screens, API logging, and task control
 - **Rich Mode** (default) - Rich terminal dashboard with live updates
-- **CLI Mode** (`--cli`) - Basic scrolling chat interface
+- **CLI Mode** (`--cli`) - Lightweight terminal interface with full color support, commands (`go`, `stop`, `status`, `tasks`, `agents`, `spawn`), and real-time command output streaming
 
 ## TUI Dashboard Layout
 
@@ -287,6 +300,38 @@ Logs are saved under `logs/` (e.g. `dashboard_YYYYMMDD_HHMMSS.log` for the legac
 - Python 3.9+
 - Requesty API key (get one at https://requesty.ai)
 - Rich library for terminal UI
+
+## Devussy DevPlan Mode & AutoDispatcher (Dec 2025)
+
+For large projects, you can let **Devussy** generate a full devplan and task queue, then let the swarm execute it with minimal token overhead:
+
+- Devussy writes per-project artifacts under `projects/<name>/scratch/shared/`:
+  - `devplan.md` – phase/task breakdown with `@agent:` tags and anchors
+  - `phases/phaseN.md` – detailed phase task files
+  - `task_queue.md` – copy‑paste‑ready `assign_task()` commands per task
+- `core/swarm_orchestrator.py` parses these once at startup and precomputes:
+  - All tasks and phases (with agent roles, goal, requirements, done‑when)
+  - Dispatch commands for each task
+  - Live dashboard data for the TUI
+- `core/auto_dispatcher.py` replaces the Architect for **dispatching**:
+  - `go` in the TUI/CLI calls the AutoDispatcher, not the Architect LLM
+  - **Parallel dispatch**: Up to 3 tasks dispatched at once (`MAX_PARALLEL_TASKS`)
+  - Workers start immediately after dispatch (conversation round auto-triggered)
+  - When a worker finishes, free slots are filled with next pending tasks
+  - Workers still use the API for real coding; dispatch itself is local, zero‑token
+- Task state is persisted in `task_state.json` so completed tasks survive restarts.
+- The TUI DevPlan panel uses orchestrator data instead of re‑parsing markdown on every round.
+- **Efficiency optimizations** reduce token usage ~35%:
+  - Project Manager disabled in devussy mode (AutoDispatcher handles coordination)
+  - File read caching (mtime-based) avoids re-reading unchanged files
+  - Project structure caching (60s TTL) reduces redundant tree scans
+  - Worker prompts emphasize `read_multiple_files` for batch operations
+
+The right‑sidebar **API History** panel is now token‑aware:
+
+- Each entry shows: model, elapsed time, token counts, and short previews.
+- Request/response bodies and tool call arguments are **truncated** (first few lines/characters) to avoid re‑sending giant payloads as context.
+- This keeps the dashboard informative while preventing accidental context bloat.
 
 ## License
 

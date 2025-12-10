@@ -1306,3 +1306,249 @@ Devussy-generated plans were using Python code for TypeScript/Godot projects bec
 
 *Last updated: December 9, 2025 (orchestration + resume + TUI layout)*
 *Status: One-task-per-worker enforced, tool-based completion summaries visible, Devussy projects resumable via dashboard + Architect helpers*
+
+---
+
+## Latest Updates (December 9, 2025 - AutoDispatcher & Token-Efficient Devussy Orchestration)
+
+### 1. AutoDispatcher: Local Orchestration (No Architect API Calls)
+
+**Problem:** Even after improving Devussy integration, the Architect still burned huge numbers of tokens when dispatching tasks:
+
+- Re-reading `task_queue.md` and phase files repeatedly.
+- Treating `assign_task(...)` code blocks as documentation instead of tool calls.
+- Looping on `read_file` / `get_swarm_state` without actually dispatching.
+
+**Solution:** Introduced a **local AutoDispatcher** that takes over dispatching for Devussy projects, so the Architect no longer needs to make API calls just to move tasks around.
+
+- New module: `core/auto_dispatcher.py`
+  - `AutoDispatcher.dispatch_next_task()` – used when the user types `go`.
+  - `AutoDispatcher.on_task_completed(task_id, agent_name)` – called automatically when workers finish.
+- AutoDispatcher uses the **SwarmOrchestrator** instead of LLM reasoning:
+  - Asks `SwarmOrchestrator.get_next_dispatchable_tasks(max_count=1)` for the next pending task.
+  - Spawns the appropriate worker locally via `Chatroom.spawn_agent(role)` if needed.
+  - Calls `Chatroom.assign_task(agent_name, description)` directly.
+  - Logs status into the dashboard (no LLM messages, no tokens).
+- The Architect remains responsible for **design and planning**, but **not for dispatch** in Devussy mode.
+
+### 2. SwarmOrchestrator: Persistent Task State & Task Queue Updates
+
+**Problem:** Devussy task queues (`task_queue.md`) and phase files did not persist task state cleanly across sessions. Completed work looked "pending" after a restart, and recovered runs could reassign already-done tasks.
+
+**Solution:** Extended `core/swarm_orchestrator.py` to own task state and keep the markdown in sync.
+
+- New persistence layer:
+  - `_save_task_state()` and `_load_task_state()` read/write `scratch/shared/task_state.json`.
+  - On startup, `initialize()` parses `devplan.md` + `phases/phaseN.md`, then overlays any saved states.
+  - Phase states (`NOT_STARTED` / `IN_PROGRESS` / `COMPLETED`) are recomputed from task states.
+- Task state transitions are now persisted and reflected in the Devussy task queue:
+  - `mark_task_dispatched(task_id, agent_name)` → sets `DISPATCHED`, updates phase state, saves state, and calls `_update_task_queue_file()`.
+  - `mark_task_completed(task_id)` → sets `COMPLETED`, saves state, updates phase if all tasks done, and calls `_update_task_queue_file()`.
+- `_update_task_queue_file()` rewrites status lines in `task_queue.md`:
+  - For each task header like `### ⚙️ Task 1.1: ...` (or 🎨/🐛/🚀/📝 variants) it replaces:
+    - `**Status:** `pending`` → `**Status:** `📤 dispatched`` when dispatched.
+    - `**Status:** `pending`` → `**Status:** `✅ completed`` when completed.
+  - Only non-pending tasks are modified; pending tasks remain unchanged.
+
+Net effect: Devussy task queues now behave like a live kanban board:
+
+- The orchestrator is the **single source of truth** for task state.
+- Markdown files (`task_queue.md`, DevPlan dashboard) are derived views.
+- Completed work stays completed across TUI restarts.
+
+### 3. Architect: Passive in Devussy Mode
+
+**Problem:** Even with better prompts, Bossy McArchitect continued to respond to `go` and auto-orchestrator messages, consuming tokens for work that the AutoDispatcher can do deterministically.
+
+**Solution:** Narrowed the Architect's role when Devussy + AutoDispatcher are in play.
+
+- `agents/architect.py` now overrides `should_respond(message)`:
+  - **Never** responds to the literal `go` command (AutoDispatcher owns it).
+  - **Never** responds to "Auto Orchestrator" messages.
+  - Only responds when:
+    - The user explicitly mentions "architect" or "bossy".
+    - The user asks for design/plan/architecture guidance.
+- `speak_probability` reduced from `0.5` → `0.1` to further suppress unsolicited replies.
+
+Bossy is now effectively a **design consultant** for Devussy projects; routine dispatch is handled locally.
+
+### 4. Dashboard TUI: "go" Uses AutoDispatcher
+
+**Problem:** Previously, typing `go` sent a human message to the Architect, who then had to read `task_queue.md`, reason about which tasks to assign, and call tools – all via API.
+
+**Solution:** The TUI intercepts `go` and routes it to the AutoDispatcher instead of the Architect.
+
+- In `dashboard_tui.py::send_message`:
+  - If `content.strip().lower() == "go"`, the dashboard calls `_handle_go_command()` and **does not** send a chat message to the agents.
+- `_handle_go_command()`:
+  - Logs `🚀 AutoDispatcher: Starting task dispatch (no LLM needed)...`.
+  - Gets the global `AutoDispatcher` and wires a status callback so updates appear in the chat log.
+  - Calls `dispatcher.dispatch_next_task()` to assign the next pending Devussy task.
+  - If a task was dispatched, triggers a worker round via `run_conversation()` (workers still use tools + API for actual coding).
+  - If nothing is dispatchable, prints a friendly `No tasks to dispatch right now` message instead of waking the Architect.
+
+This makes `go` effectively **zero-token** for orchestration: only the worker's coding work consumes tokens.
+
+### 5. API History: Compact, Token-Aware View
+
+**Problem:** The API history panel in the TUI used to render full request/response bodies, including long message arrays. This inflated context when the model re-read its own logs and made debugging noisy.
+
+**Solution:** Reworked `dashboard_tui.py::ApiLogEntry` to display **summaries** by default and aggressively truncate details:
+
+- Level 0 (collapsed): header with agent, status, time, and total tokens.
+- Level 1 (summary):
+  - Model, max tokens, message count, tools.
+  - Task summary, token usage summary, short request/response preview.
+- Level 2 (full):
+  - Request messages truncated to ~200 chars and 5 lines per message.
+  - Response content truncated to 10 lines, 100 chars per line.
+  - Tool calls limited to 5 calls per request and 3 arguments per call, each capped at 100 chars.
+
+The panel remains useful for debugging without acting as a secondary long-term context sink.
+
+### 6. Manual Devussy + AutoDispatcher Test Flow
+
+For a Devussy-generated project (e.g. `projects/doomussy3`):
+
+1. Run the TUI:
+   - `python main.py --tui`
+2. Select the project and username.
+3. When prompted about history, choose based on your test needs (clean slate vs resume).
+4. Wait for the DevPlan summary in the right sidebar (phase counts, existing files, etc.).
+5. Type `go` in the input box:
+   - Verify you see `🚀 AutoDispatcher: Starting task dispatch (no LLM needed)...`.
+   - Confirm **no Architect reply** appears for the `go` command.
+   - Watch a worker (typically Codey McBackend) receive Task `1.1` and start working.
+6. After the worker calls `complete_my_task`, watch:
+   - AutoDispatcher logs a new dispatch for Task `1.2` (or next pending task).
+   - `task_state.json` marks Task `1.1` as `COMPLETED`.
+   - `task_queue.md` shows Task `1.1` with `**Status:** `✅ completed``.
+7. Stop and restart the TUI, reload the same project, and type `go` again:
+   - Completed tasks should **not** be reassigned.
+   - AutoDispatcher should dispatch the next pending task.
+
+*Last updated: December 9, 2025 (AutoDispatcher + SwarmOrchestrator integration)*
+*Status: Architect focused on design; AutoDispatcher handles Devussy task dispatch locally with persistent, token-efficient orchestration.*
+
+---
+
+## Latest Updates (December 9, 2025 - CLI Parity, Parallel Dispatch & Efficiency)
+
+### 1. CLI/TUI Feature Parity via SessionController
+
+**Problem:** The CLI (`main.py --cli`) and TUI (`main.py --tui`) had duplicated logic, making it hard to maintain both modes.
+
+**Solution:** Created a shared `SessionController` in `core/session_controller.py`:
+- Encapsulates Chatroom, orchestrator, task manager, settings
+- Both CLI and TUI use the same controller
+- New `SwarmCLI` class in `main.py` provides a "TUI-lite" experience
+- Commands: `go`, `stop`, `status`, `tasks`, `agents`, `spawn`, `help`, `quit`
+- Full ANSI color support for agent messages
+
+### 2. Parallel Task Dispatch (Up to 3 Workers)
+
+**Problem:** Tasks were dispatched one at a time, leaving workers idle while waiting for sequentially-dispatched work.
+
+**Solution:** Updated `core/auto_dispatcher.py`:
+- `MAX_PARALLEL_TASKS = 3` – dispatches up to 3 tasks at once
+- `dispatch_next_task()` now batch-dispatches independent tasks
+- `on_task_completed()` fills free slots when a worker finishes
+- Counts busy workers and dispatches to fill available capacity
+- One conversation round runs all newly-assigned workers in parallel
+
+**Example flow:**
+```
+go → Dispatches Tasks 1.1, 1.2, 1.3 to three workers
+Worker A finishes → Dispatches Task 1.4 to Worker A
+Worker B finishes → Dispatches Task 1.5 to Worker B
+```
+
+### 3. Efficiency Improvements (~35% Token Reduction)
+
+**Problem:** Log analysis showed massive token waste:
+- Project Manager making 59+ unnecessary API calls
+- `project_design.md` read 194 times
+- `get_project_structure` called 141 times
+- 49 failed `complete_my_task` calls from PM
+
+**Solutions:**
+
+| Fix | File | Impact |
+|-----|------|--------|
+| **Disable PM in devussy mode** | `agents/project_manager.py` | -59 API calls |
+| **Increase PM cooldowns** | `agents/project_manager.py` | 15s→120s, 60s→300s |
+| **Cache `get_project_structure`** | `core/agent_tools.py` | 60s TTL cache |
+| **Cache `read_file`** | `core/agent_tools.py` | mtime-based cache |
+| **Remove `complete_my_task` from PM** | `core/slim_tools.py` | -49 failed calls |
+| **Update prompts for batch reads** | `agents/lean_prompts.py` | Emphasize `read_multiple_files` |
+
+### 4. Command Output Streaming
+
+**Problem:** When agents ran commands (pytest, npm, etc.), output wasn't visible until completion.
+
+**Solution:** Updated `core/agent_tools.py::_run_command`:
+- Streams stdout line-by-line during execution (when possible)
+- Shows output summary after completion (up to 20 lines)
+- Displays exit code with ✓ (success) or ✗ (failure)
+- Shows stderr on failure
+
+**Example output:**
+```
+🔧 Codey McBackend: Running: pytest -q
+    │ .....
+    │ 5 passed in 0.24s
+    ✓ Exit code: 0
+```
+
+### 5. Command Path Auto-Fixing
+
+**Problem:** Agents passed `shared/frontend/ts-app` in commands, but commands run FROM `shared/`, creating broken double-paths like `shared/shared/frontend/ts-app`.
+
+**Solution:** Auto-fix in `core/agent_tools.py::_run_command`:
+```python
+# Fix --prefix shared/... -> --prefix ...
+command = re.sub(r'--prefix\s+shared/', '--prefix ', command)
+# Fix cd shared/ -> cd .
+command = re.sub(r'\bcd\s+shared/?(?=\s|$)', 'cd .', command)
+# Fix paths like "shared/frontend" in common patterns
+command = re.sub(r'(?<=\s)shared/(?=\w)', '', command)
+```
+
+Also updated all worker prompts (`agents/lean_prompts.py`) with clear path guidance:
+```
+## PATHS (IMPORTANT!)
+- You are ALREADY in the shared/ directory
+- Use paths like: src/app.py, frontend/src/App.tsx
+- Do NOT prefix with "shared/" - that creates broken paths
+```
+
+### 6. Workers Start After Dispatch
+
+**Problem:** After AutoDispatcher assigned a task, the worker wouldn't start because no conversation round was triggered.
+
+**Solution:** `auto_dispatcher.py::_dispatch_task` now calls `chatroom.run_conversation_round()` after successful dispatch, ensuring workers begin immediately.
+
+### Files Changed
+
+| File | Changes |
+|------|---------|
+| `core/session_controller.py` | NEW: Shared controller for CLI/TUI |
+| `main.py` | NEW: `SwarmCLI` class with full color support |
+| `core/auto_dispatcher.py` | Parallel dispatch, run round after dispatch |
+| `agents/project_manager.py` | Disabled in devussy mode, increased cooldowns |
+| `core/agent_tools.py` | File/structure caching, command streaming, path fixes |
+| `core/slim_tools.py` | PM tool filtering (no complete_my_task) |
+| `agents/lean_prompts.py` | Batch read guidance, path handling |
+
+### Testing Checklist
+
+- [ ] `python main.py --cli` starts SwarmCLI with colors
+- [ ] `go` dispatches up to 3 tasks in parallel
+- [ ] Workers start immediately after dispatch
+- [ ] Command output shows during/after execution
+- [ ] `npm --prefix shared/...` auto-corrected to `npm --prefix ...`
+- [ ] PM doesn't respond in devussy mode
+- [ ] Repeated `read_file` calls return cached results
+
+*Last updated: December 9, 2025 (CLI parity + parallel dispatch + efficiency)*
+*Status: CLI/TUI share SessionController, parallel dispatch enabled, ~35% token reduction from caching and PM changes*

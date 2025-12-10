@@ -12,7 +12,7 @@ import subprocess
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Dict, List, Optional, Any, Tuple, Callable
 import logging
 import aiofiles
 
@@ -133,10 +133,16 @@ class AgentToolExecutor:
         # FORCE SHARED WORKSPACE: All agents now work in scratch/shared by default
         self.agent_workspace = self.scratch_dir / "shared"
         self.lock_manager = get_lock_manager()
+        # Status callback for streaming command output
+        self._status_callback: Optional[Callable] = None
         
         # Ensure directories exist
         self.scratch_dir.mkdir(parents=True, exist_ok=True)
         self.agent_workspace.mkdir(parents=True, exist_ok=True)
+    
+    def set_status_callback(self, callback: Optional[Callable]):
+        """Set callback for status updates (used for streaming command output)."""
+        self._status_callback = callback
     
     def _safe_name(self, name: str) -> str:
         """Convert agent name to safe folder name."""
@@ -227,6 +233,7 @@ class AgentToolExecutor:
             "spawn_worker": self._spawn_worker,
             "create_task": self._create_task,
             "assign_task": self._assign_task,
+            "get_next_task": self._get_next_task,
             "get_swarm_state": self._get_swarm_state,
             "update_devplan_dashboard": self._update_devplan_dashboard,
             "update_task_status": self._update_task_status,
@@ -256,8 +263,12 @@ class AgentToolExecutor:
             logger.error(f"[{self.agent_name}] Tool {tool_name} error: {e}")
             return {"success": False, "error": str(e)}
     
+    # Class-level read cache to avoid re-reading unchanged files
+    # Key: resolved path, Value: (mtime, result)
+    _read_file_cache: Dict[str, tuple] = {}
+    
     async def _read_file(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Read file contents."""
+        """Read file contents (with caching for unchanged files)."""
         path = args.get("path", "")
         if not path:
             return {"success": False, "error": "path is required"}
@@ -273,6 +284,16 @@ class AgentToolExecutor:
             return {"success": False, "error": f"Not a file: {path}"}
         
         try:
+            # Check cache - use file modification time as key
+            resolved_str = str(resolved)
+            current_mtime = resolved.stat().st_mtime
+            
+            if resolved_str in AgentToolExecutor._read_file_cache:
+                cached_mtime, cached_result = AgentToolExecutor._read_file_cache[resolved_str]
+                if cached_mtime == current_mtime:
+                    # File unchanged, return cached result
+                    return cached_result
+            
             async with aiofiles.open(resolved, 'r', encoding='utf-8') as f:
                 content = await f.read()
             
@@ -280,7 +301,7 @@ class AgentToolExecutor:
             lines = content.split('\n')
             numbered = '\n'.join(f"{i+1}: {line}" for i, line in enumerate(lines))
             
-            return {
+            result = {
                 "success": True,
                 "result": {
                     "path": str(resolved.relative_to(self.scratch_dir)),
@@ -289,6 +310,11 @@ class AgentToolExecutor:
                     "line_count": len(lines)
                 }
             }
+            
+            # Cache the result
+            AgentToolExecutor._read_file_cache[resolved_str] = (current_mtime, result)
+            
+            return result
         except Exception as e:
             return {"success": False, "error": f"Failed to read file: {e}"}
     
@@ -599,6 +625,16 @@ class AgentToolExecutor:
         if not command:
             return {"success": False, "error": "command is required"}
         
+        # FIX: Agents often include "shared/" in paths but commands already run from shared/
+        # This causes paths like shared/shared/frontend/... - fix it automatically
+        import re
+        # Fix --prefix shared/... -> --prefix ...
+        command = re.sub(r'--prefix\s+shared/', '--prefix ', command)
+        # Fix cd shared/ -> cd .
+        command = re.sub(r'\bcd\s+shared/?(?=\s|$)', 'cd .', command)
+        # Fix paths like "shared/frontend" in common patterns
+        command = re.sub(r'(?<=\s)shared/(?=\w)', '', command)
+        
         # Allowed commands (whitelist approach) - expanded for better dev experience
         allowed_prefixes = [
             # Python ecosystem
@@ -639,13 +675,82 @@ class AgentToolExecutor:
                 cwd=str(self.agent_workspace)
             )
             
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+            # Stream output if status callback is available
+            stdout_lines = []
+            stderr_lines = []
+            
+            if self._status_callback and proc.stdout:
+                # Stream stdout line by line
+                async def stream_output():
+                    while True:
+                        line = await proc.stdout.readline()
+                        if not line:
+                            break
+                        decoded = line.decode('utf-8', errors='replace').rstrip()
+                        stdout_lines.append(decoded)
+                        if self._status_callback:
+                            try:
+                                await self._status_callback(f"    {decoded}")
+                            except Exception:
+                                pass
+                
+                # Run streaming with timeout
+                try:
+                    await asyncio.wait_for(stream_output(), timeout=30)
+                except asyncio.TimeoutError:
+                    pass
+                
+                # Collect any remaining stderr
+                if proc.stderr:
+                    stderr_data = await proc.stderr.read()
+                    stderr_lines = stderr_data.decode('utf-8', errors='replace').split('\n')
+                
+                await proc.wait()
+            else:
+                # Non-streaming fallback
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+                stdout_lines = stdout.decode('utf-8', errors='replace').split('\n')
+                stderr_lines = stderr.decode('utf-8', errors='replace').split('\n')
+            
+            stdout_text = '\n'.join(stdout_lines)
+            stderr_text = '\n'.join(stderr_lines)
+            
+            # Show command output summary if callback available
+            if self._status_callback:
+                # Show stdout (limit to first 20 lines for readability)
+                if stdout_text.strip():
+                    output_lines = stdout_text.strip().split('\n')
+                    for line in output_lines[:20]:
+                        if line.strip():
+                            try:
+                                await self._status_callback(f"    │ {line}")
+                            except Exception:
+                                pass
+                    if len(output_lines) > 20:
+                        try:
+                            await self._status_callback(f"    │ ... ({len(output_lines) - 20} more lines)")
+                        except Exception:
+                            pass
+                
+                # Show stderr if there was any
+                if stderr_text.strip() and proc.returncode != 0:
+                    try:
+                        await self._status_callback(f"    ⚠️ stderr: {stderr_text[:200]}")
+                    except Exception:
+                        pass
+                
+                # Show exit status
+                status_icon = "✓" if proc.returncode == 0 else "✗"
+                try:
+                    await self._status_callback(f"    {status_icon} Exit code: {proc.returncode}")
+                except Exception:
+                    pass
             
             return {
                 "success": proc.returncode == 0,
                 "result": {
-                    "stdout": stdout.decode('utf-8', errors='replace')[:5000],
-                    "stderr": stderr.decode('utf-8', errors='replace')[:2000],
+                    "stdout": stdout_text[:5000],
+                    "stderr": stderr_text[:2000],
                     "return_code": proc.returncode
                 }
             }
@@ -971,6 +1076,56 @@ class AgentToolExecutor:
         if success:
             return {"success": True, "result": f"Assigned task to {agent_name}: {description[:50]}..."}
         return {"success": False, "error": f"Failed to assign task to {agent_name} - agent not found"}
+
+    async def _get_next_task(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Get the next pending task from the orchestrator.
+        
+        Returns the next dispatchable task with its pre-formatted assign_task command.
+        This eliminates the need to read task_queue.md repeatedly.
+        """
+        from core.swarm_orchestrator import get_orchestrator
+        
+        orchestrator = get_orchestrator()
+        if not orchestrator or not orchestrator._initialized:
+            return {
+                "success": False, 
+                "error": "Orchestrator not initialized. Use read_file('shared/task_queue.md') instead."
+            }
+        
+        next_tasks = orchestrator.get_next_dispatchable_tasks(max_count=1)
+        
+        if not next_tasks:
+            # Check if all done
+            summary = orchestrator.get_state_summary()
+            if summary["completed_tasks"] == summary["total_tasks"]:
+                return {
+                    "success": True,
+                    "result": {
+                        "status": "ALL_DONE",
+                        "message": f"All {summary['total_tasks']} tasks completed! Project is finished."
+                    }
+                }
+            return {
+                "success": True,
+                "result": {
+                    "status": "WAITING",
+                    "message": "No dispatchable tasks - waiting for dependencies or workers to finish."
+                }
+            }
+        
+        task = next_tasks[0]
+        return {
+            "success": True,
+            "result": {
+                "status": "READY",
+                "task_id": task.id,
+                "title": task.title,
+                "agent_role": task.agent_role,
+                "agent_name": task.agent_name,
+                "dispatch_command": task.dispatch_command,
+                "instruction": f"1. spawn_worker('{task.agent_role}')\n2. Copy and execute this:\n{task.dispatch_command}"
+            }
+        }
 
     async def _append_decision_log(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Append a structured entry to the shared decisions log.
@@ -1309,7 +1464,12 @@ class AgentToolExecutor:
 
         task_id = getattr(agent, "current_task_id", None)
         if not task_id:
-            return {"success": False, "error": "No task currently assigned to you"}
+            # Check if the agent was previously working but task was reassigned/completed
+            if agent.status == AgentStatus.WORKING:
+                # Reset to IDLE - task was likely completed by someone else or reassigned
+                agent.status = AgentStatus.IDLE
+                logger.warning(f"[{self.agent_name}] Was WORKING but had no task_id - resetting to IDLE")
+            return {"success": False, "error": "No task currently assigned to you. You may have already completed it or it was reassigned. Wait for a new task assignment."}
 
         tm = get_task_manager()
         task = tm.complete_task(task_id, result=result_summary or "Task completed successfully")
@@ -1323,11 +1483,25 @@ class AgentToolExecutor:
         agent.current_task_description = ""
 
         logger.info(f"[{self.agent_name}] Completed task {task_id} via complete_my_task tool")
+        
+        # Update orchestrator state for real-time dashboard
+        try:
+            from core.swarm_orchestrator import get_orchestrator
+            orchestrator = get_orchestrator()
+            if orchestrator:
+                # Try to extract task number from description (e.g., "Task 1.1: Title")
+                task_desc = getattr(task, 'description', '') or ''
+                import re
+                task_num_match = re.search(r'Task\s+(\d+\.\d+)', task_desc)
+                if task_num_match:
+                    orch_task_id = task_num_match.group(1)
+                    orchestrator.mark_task_completed(orch_task_id)
+                    logger.debug(f"Orchestrator updated: task {orch_task_id} completed")
+        except Exception as e:
+            logger.debug(f"Could not update orchestrator: {e}")
 
         # BROADCAST COMPLETION SUMMARY so it's always visible in chat
-        summary_preview = result_summary[:200] if result_summary else "Task completed"
-        if len(result_summary) > 200:
-            summary_preview += "..."
+        summary_preview = result_summary if result_summary else "Task completed"
         completion_msg = Message(
             content=f"✅ **Task Complete** by {self.agent_name}: {summary_preview}",
             sender_name="System",
@@ -1337,32 +1511,27 @@ class AgentToolExecutor:
         )
         await chatroom._broadcast_message(completion_msg)
 
-        # Check if all tasks are done and trigger auto-resume
-        all_tasks = tm.get_all_tasks()
-        open_tasks = [t for t in all_tasks if t.status in (TaskStatus.PENDING, TaskStatus.IN_PROGRESS)]
-        completed_tasks = [t for t in all_tasks if t.status == TaskStatus.COMPLETED]
-
+        # Use AutoDispatcher instead of LLM-based Architect
+        # This is MUCH more efficient - no API calls, instant dispatch
         auto_resume_triggered = False
-        if not open_tasks and completed_tasks:
-            try:
-                auto_msg = Message(
-                    content=(
-                        f"Phase milestone reached: {len(completed_tasks)} task(s) completed, 0 remaining. "
-                        "Bossy McArchitect: Review the devplan, check what work remains in the master plan, "
-                        "and assign the next batch of tasks to keep development moving."
-                    ),
-                    sender_name="Auto Orchestrator",
-                    sender_id="auto_orchestrator",
-                    role=MessageRole.HUMAN,
-                    message_type=MessageType.CHAT
-                )
-                await chatroom._broadcast_message(auto_msg)
-                for a in list(chatroom._agents.values()):
-                    await a.process_incoming_message(auto_msg)
-                auto_resume_triggered = True
-                logger.info("Auto-orchestrator triggered via complete_my_task: all tasks complete")
-            except Exception as e:
-                logger.warning(f"Failed to trigger auto-resume: {e}")
+        try:
+            from core.auto_dispatcher import get_auto_dispatcher
+            dispatcher = get_auto_dispatcher()
+            
+            # Extract task ID for the dispatcher
+            import re
+            task_num_match = re.search(r'Task\s+(\d+\.\d+)', getattr(self, 'current_task_description', '') or '')
+            completed_task_id = task_num_match.group(1) if task_num_match else "unknown"
+            
+            # Dispatch next task automatically (no LLM needed!)
+            auto_resume_triggered = await dispatcher.on_task_completed(completed_task_id, self.agent_name)
+            
+            if auto_resume_triggered:
+                logger.info(f"AutoDispatcher: dispatched next task after {completed_task_id}")
+            else:
+                logger.info(f"AutoDispatcher: no more tasks to dispatch after {completed_task_id}")
+        except Exception as e:
+            logger.warning(f"AutoDispatcher failed, falling back: {e}")
 
         return {
             "success": True,
@@ -1993,10 +2162,23 @@ class AgentToolExecutor:
         except Exception as e:
             return {"success": False, "error": f"Failed to scaffold project: {e}"}
 
+    # Class-level cache for project structure (shared across all instances)
+    _project_structure_cache: Dict[str, tuple] = {}  # {path: (timestamp, result)}
+    _STRUCTURE_CACHE_TTL = 60.0  # Cache for 60 seconds
+    
     async def _get_project_structure(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Get a tree view of the project structure."""
+        """Get a tree view of the project structure (cached for efficiency)."""
+        import time
         path = args.get("path", "shared")
         max_depth = args.get("max_depth", 4)
+        
+        # Check cache first - avoid regenerating static structure repeatedly
+        cache_key = f"{path}:{max_depth}"
+        now = time.time()
+        if cache_key in AgentToolExecutor._project_structure_cache:
+            cached_time, cached_result = AgentToolExecutor._project_structure_cache[cache_key]
+            if now - cached_time < AgentToolExecutor._STRUCTURE_CACHE_TTL:
+                return cached_result
         
         valid, resolved, error = self._validate_path(path)
         if not valid:
@@ -2031,10 +2213,15 @@ class AgentToolExecutor:
         
         tree = f"{path}/\n{build_tree(resolved)}"
         
-        return {
+        result = {
             "success": True,
             "result": tree
         }
+        
+        # Cache the result
+        AgentToolExecutor._project_structure_cache[cache_key] = (now, result)
+        
+        return result
 
     async def _move_file(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Move or rename a file."""

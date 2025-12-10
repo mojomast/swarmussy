@@ -242,6 +242,14 @@ SLIM_ORCHESTRATOR_TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "get_next_task",
+            "description": "Get next pending task with dispatch command. Use instead of reading task_queue.md.",
+            "parameters": {"type": "object", "properties": {}}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "get_swarm_state",
             "description": "Get all agents/tasks status.",
             "parameters": {"type": "object", "properties": {}}
@@ -337,9 +345,23 @@ SLIM_ORCHESTRATOR_PROMPT = """
 
 
 def get_slim_tools_for_agent(agent_name: str) -> list:
-    """Get minimal tool set for agent."""
+    """Get minimal tool set for agent.
+    
+    Architect gets orchestration tools (spawn, assign, etc.)
+    PM gets read-only tools (no complete_my_task - they don't get assigned tasks!)
+    Workers get full tool set including complete_my_task
+    """
     if "Architect" in agent_name:
         return SLIM_ORCHESTRATOR_TOOLS
+    
+    # PM gets reduced tools - they observe/track, NOT execute tasks
+    if "Manager" in agent_name or "Checky" in agent_name:
+        # Filter out complete_my_task - PM doesn't get assigned tasks
+        return [
+            tool for tool in SLIM_TOOL_DEFINITIONS
+            if tool.get("function", {}).get("name") != "complete_my_task"
+        ]
+    
     return SLIM_TOOL_DEFINITIONS
 
 

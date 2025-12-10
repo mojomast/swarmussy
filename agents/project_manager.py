@@ -61,11 +61,22 @@ class ProjectManager(BaseAgent):
     def should_respond(self) -> bool:
         """Decide when Checky should provide an update.
 
-        Checky responds when:
-        1. Task state changes (new tasks, assignments, completions, failures)
-        2. Periodically during active work (every 60s) to provide status updates
-        3. When there are completed tasks that haven't been reported yet
+        In DEVUSSY MODE: PM is disabled - AutoDispatcher handles coordination.
+        This saves ~25% of API calls since PM was mostly making noise.
+
+        In normal mode, Checky responds when:
+        1. Task state changes (with long cooldown)
+        2. Periodically during active work (every 5 minutes)
         """
+        # DISABLE PM IN DEVUSSY MODE - AutoDispatcher handles everything
+        try:
+            from core.settings_manager import get_settings
+            settings = get_settings()
+            if settings.get("devussy_mode", False):
+                return False  # PM disabled in devussy mode
+        except Exception:
+            pass
+        
         try:
             from core.task_manager import get_task_manager
             tm = get_task_manager()
@@ -85,10 +96,9 @@ class ProjectManager(BaseAgent):
         last_time = getattr(self, "_last_task_snapshot_time", 0.0)
         last_periodic = getattr(self, "_last_periodic_update", 0.0)
 
-        # Cooldown in seconds between Checky updates on task changes
-        CHANGE_COOLDOWN = 15.0
-        # Periodic update interval during active work
-        PERIODIC_INTERVAL = 60.0
+        # INCREASED COOLDOWNS to reduce PM spam
+        CHANGE_COOLDOWN = 120.0  # 2 minutes between task change updates (was 15s)
+        PERIODIC_INTERVAL = 300.0  # 5 minutes between periodic updates (was 60s)
 
         # First time we see tasks: report once to establish a baseline
         if last_snapshot is None:
