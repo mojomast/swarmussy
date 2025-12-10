@@ -65,6 +65,39 @@ python main.py
 python main.py --cli
 ```
 
+## Web Frontend (New!)
+
+A modern web interface is available for browser-based project management:
+
+```bash
+# Install backend dependencies
+pip install fastapi uvicorn python-multipart
+
+# Install frontend dependencies
+cd web
+npm install
+
+# Start the backend (in project root)
+python web_server.py
+
+# Start the frontend dev server (in web/ folder)
+cd web
+npm run dev
+
+# Open http://localhost:5173 in your browser
+```
+
+### Web Frontend Features
+
+- **Project Selection Screen** - Create new projects or open existing ones on startup
+- **Devussy Pipeline Integration** - Start the interview phase directly from the browser
+- **Checkpoint Resume** - Resume Devussy pipeline from any previous stage/artifact
+- **Provider Settings** - Configure API keys for Requesty, OpenAI, Anthropic, Z.AI
+- **Model Configuration** - Set models per pipeline stage and per agent
+- **Real-time Chat** - WebSocket-based chat with live agent responses
+- **File Browser** - Browse and view project files
+- **Task Board** - Monitor task progress and agent status
+
 ## How It Works
 
 ### Phase 1: Planning
@@ -135,7 +168,8 @@ python main.py --cli
 
 ## Display Modes
 
-- **TUI Mode** (`--tui`, recommended) - Full Textual dashboard with panels, settings screens, API logging, and task control
+- **Web Mode** (`python web_server.py` + `npm run dev`) - Modern browser-based UI with project management, Devussy pipeline, and provider configuration
+- **TUI Mode** (`--tui`, recommended for terminal) - Full Textual dashboard with panels, settings screens, API logging, and task control
 - **Rich Mode** (default) - Rich terminal dashboard with live updates
 - **CLI Mode** (`--cli`) - Lightweight terminal interface with full color support, commands (`go`, `stop`, `status`, `tasks`, `agents`, `spawn`), and real-time command output streaming
 

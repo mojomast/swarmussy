@@ -2004,3 +2004,98 @@ copy_artifacts_to_new_project(
 
 *Last updated: December 9, 2025 (late night)*
 *Status: AutoDispatcher refined (busy-role filtering, multi-worker roles, watchdog), context handoff auto-reset online, OS-aware commands and pytest/venv integration active, status logging noise reduced*
+
+---
+
+## Latest Updates (December 10, 2025 - Web Frontend & Full Project Management)
+
+### 1. Modern Web Frontend
+
+A complete browser-based UI has been added for project management and Devussy pipeline control:
+
+**New Files:**
+- `web_server.py` - FastAPI backend with comprehensive REST API and WebSocket support
+- `web/src/App.tsx` - Main application with project selection flow
+- `web/src/components/ProjectSelector.tsx` - Project creation/selection screen
+- `web/src/components/DevussyPipelineModal.tsx` - Devussy interview and pipeline control
+- `web/src/components/ProviderSettings.tsx` - API keys and model configuration
+- `web/src/lib/api.ts` - Frontend API client with all endpoints
+
+**Features:**
+- **Project Selection on Startup** - When opening the web UI, users see a project selector with:
+  - List of existing projects with status indicators
+  - "Create New Project" form that triggers Devussy interview
+  - Resume from checkpoint options for previous pipeline runs
+- **Devussy Pipeline Modal** - Full pipeline control including:
+  - Model selection per pipeline stage (interview, design, devplan)
+  - Real-time progress tracking with stage indicators
+  - Interactive interview chat interface
+  - WebSocket-based updates
+- **Provider Settings** - Comprehensive API configuration:
+  - Configure keys for Requesty, OpenAI, Anthropic, Z.AI
+  - Test API keys before saving
+  - Keys persisted to `.env` file
+  - Refresh available models from providers
+- **Model Configuration** - Per-stage and per-agent model selection:
+  - Pipeline models (interview, design, devplan, handoff)
+  - Architect and default swarm models
+  - Individual worker agent model overrides
+
+### 2. New Backend API Endpoints
+
+**Project Management:**
+- `POST /api/projects/create` - Create new project with name/description
+- `POST /api/projects/delete` - Delete a project (not current)
+- `GET /api/projects` - List projects with devplan status
+
+**Devussy Pipeline:**
+- `GET /api/devussy/artifacts` - List previous runs and checkpoints
+- `POST /api/devussy/start` - Start pipeline with model configuration
+- `POST /api/devussy/resume` - Resume from checkpoint or previous run
+- `POST /api/devussy/message` - Send message to interview
+
+**Provider & Models:**
+- `GET /api/providers` - List providers with key status
+- `GET /api/models` - Fetch available models from Requesty API
+- `POST /api/providers/key` - Save API key (persists to .env)
+- `POST /api/providers/test` - Test if API key works
+
+### 3. Running the Web Frontend
+
+```bash
+# Terminal 1: Start backend
+python web_server.py
+# Runs on http://localhost:8000
+
+# Terminal 2: Start frontend dev server
+cd web
+npm install  # first time only
+npm run dev
+# Runs on http://localhost:5173
+
+# Open http://localhost:5173 in browser
+```
+
+The Vite dev server proxies `/api/*` and `/ws/*` to the backend automatically.
+
+### 4. Web Frontend Flow
+
+1. **Startup** → Project Selector screen
+2. **New Project** → Enter name → Devussy Pipeline Modal opens
+3. **Configure Models** → Select models for each pipeline stage
+4. **Start Interview** → Chat with Devussy to define project
+5. **Pipeline Processing** → Design, devplan, phases generated
+6. **Complete** → Main chat view with swarm ready to work
+7. **Existing Project** → Select from list → Main chat view
+
+### 5. Sidebar Navigation (Main View)
+
+- 📁 **Project** - Return to project selector
+- 💬 **Chat** - Main chat interface
+- 📄 **Files** - File browser
+- ✨ **Devussy** - Open pipeline modal
+- 🔑 **API Keys** - Provider settings
+- ⚙️ **Settings** - General settings
+
+*Last updated: December 10, 2025*
+*Status: Full web frontend with project management, Devussy pipeline integration, provider/model configuration, and checkpoint resume*

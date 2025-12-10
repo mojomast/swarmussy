@@ -1,8 +1,8 @@
 {
   "username": "Kyle",
-  "round_delay": 1.0,
+  "round_delay": 1,
   "response_delay_min": 0.5,
-  "response_delay_max": 1.0,
+  "response_delay_max": 1,
   "max_responders": 3,
   "auto_chat": true,
   "verbose": false,
@@ -30,6 +30,9 @@
   "efficient_mode": true,
   "context_messages": 5,
   "skip_memory_context": true,
-  "devussy_mode": true,
-  "devussy_model": "openai/gpt-5-mini"
+  "devussy_mode": false,
+  "devussy_model": "openai/gpt-5-mini",
+  "interview_model": "openai/gpt-5-nano",
+  "design_model": "openai/gpt-5-nano",
+  "devplan_model": "openai/gpt-5-nano"
 }
