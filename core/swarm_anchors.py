@@ -37,6 +37,9 @@ TASK_DEPENDS = "@depends:"       # @depends: 1.1, 1.2 OR @depends: none
 TASK_STATUS = "@status:"         # @status: pending | in_progress | completed | blocked
 TASK_FILES = "@files:"           # @files: (multiline list follows)
 TASK_DONE_WHEN = "@done_when:"   # @done_when: Tests pass, exports X
+TASK_COMPLEXITY = "@complexity:" # @complexity: trivial | simple | medium | complex
+TASK_BATCH_WITH = "@batch_with:" # @batch_with: 1.2, 1.3 (can be batched with these tasks)
+TASK_PARALLEL_SAFE = "@parallel_safe:" # @parallel_safe: true | false (can run with other agents)
 
 # Task section headers (within task block)
 TASK_GOAL = "**Goal:**"
@@ -104,6 +107,19 @@ STATUS_IN_PROGRESS = "in_progress"
 STATUS_COMPLETED = "completed"
 STATUS_BLOCKED = "blocked"
 STATUS_SKIPPED = "skipped"
+
+# Complexity levels for task batching
+COMPLEXITY_TRIVIAL = "trivial"   # < 5 min, single file, no deps - ALWAYS batch
+COMPLEXITY_SIMPLE = "simple"     # < 15 min, 1-2 files - batch if same agent
+COMPLEXITY_MEDIUM = "medium"     # 15-60 min, multiple files
+COMPLEXITY_COMPLEX = "complex"   # > 60 min, architectural changes
+
+COMPLEXITY_BATCH_LIMIT = {
+    COMPLEXITY_TRIVIAL: 5,  # Batch up to 5 trivial tasks
+    COMPLEXITY_SIMPLE: 3,   # Batch up to 3 simple tasks
+    COMPLEXITY_MEDIUM: 1,   # Don't batch medium tasks
+    COMPLEXITY_COMPLEX: 1,  # Don't batch complex tasks
+}
 
 # Status emoji mappings for display
 STATUS_EMOJI = {

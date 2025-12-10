@@ -75,6 +75,11 @@ class SwarmTask:
     dispatch_command: str = ""  # Pre-formatted assign_task() call
     assigned_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
+    # NEW: Complexity and batching
+    complexity: str = "medium"  # trivial, simple, medium, complex
+    batch_with: List[str] = field(default_factory=list)  # Task IDs that can be batched together
+    parallel_safe: bool = True  # Can run alongside other agents
+    batch_key: str = ""  # Computed key for grouping (agent_role + phase)
     
     @property
     def emoji(self) -> str:
@@ -341,6 +346,24 @@ class SwarmOrchestrator:
         done_match = re.search(r'@done_when:\s*([^\n]+)', content, re.IGNORECASE)
         task.done_when = done_match.group(1).strip() if done_match else "Task completed as specified"
         
+        # Extract @complexity:
+        complexity_match = re.search(r'@complexity:\s*(trivial|simple|medium|complex)', content, re.IGNORECASE)
+        task.complexity = complexity_match.group(1).lower() if complexity_match else self._infer_complexity(content)
+        
+        # Extract @parallel_safe:
+        parallel_match = re.search(r'@parallel_safe:\s*(true|false)', content, re.IGNORECASE)
+        task.parallel_safe = parallel_match.group(1).lower() == 'true' if parallel_match else True
+        
+        # Extract @batch_with:
+        batch_match = re.search(r'@batch_with:\s*([^\n]+)', content, re.IGNORECASE)
+        if batch_match:
+            batch_text = batch_match.group(1).strip()
+            if batch_text.lower() != 'none':
+                task.batch_with = [b.strip() for b in batch_text.split(',') if b.strip()]
+        
+        # Compute batch key for grouping
+        task.batch_key = f"{task.agent_role}_{task.phase}"
+        
         # Extract goal from **Goal:** or first paragraph
         goal_match = re.search(r'\*\*Goal:\*\*\s*(.+?)(?:\n\n|\n\*\*|$)', content, re.DOTALL)
         if goal_match:
@@ -356,6 +379,30 @@ class SwarmOrchestrator:
         task.requirements = self._extract_requirements(content)
         
         return task
+    
+    def _infer_complexity(self, content: str) -> str:
+        """Infer task complexity from content if not specified."""
+        content_lower = content.lower()
+        
+        # Count indicators
+        file_count = len(self._extract_files(content))
+        step_count = len(re.findall(r'^\s*\d+\.', content, re.MULTILINE))
+        
+        # Trivial indicators
+        trivial_words = ['config', 'import', 'update', 'fix', 'tweak', 'add line', 'rename']
+        if any(w in content_lower for w in trivial_words) and file_count <= 1:
+            return 'trivial'
+        
+        # Complex indicators
+        complex_words = ['architecture', 'refactor', 'redesign', 'migrate', 'overhaul', 'system']
+        if any(w in content_lower for w in complex_words) or file_count > 5:
+            return 'complex'
+        
+        # Simple vs medium based on scope
+        if file_count <= 2 and step_count <= 3:
+            return 'simple'
+        
+        return 'medium'
     
     def _infer_agent(self, content: str) -> str:
         """Infer agent role from task content."""

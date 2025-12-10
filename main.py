@@ -1096,7 +1096,8 @@ class SwarmCLI:
         try:
             from core.devussy_integration import (
                 check_devussy_available, 
-                run_devussy_pipeline_sync, 
+                run_devussy_pipeline_sync,
+                run_devussy_with_resume_option,
                 load_devplan_for_swarm,
                 select_devussy_model,
             )
@@ -1118,7 +1119,7 @@ class SwarmCLI:
                         settings.set("devussy_model", devussy_model)
                     
                     print(f"\n{Colors.MAGENTA}Starting Devussy pipeline...{Colors.RESET}\n")
-                    success, message = run_devussy_pipeline_sync(
+                    success, message = run_devussy_with_resume_option(
                         Path(project.root), 
                         verbose=False,
                         model=saved_model,
@@ -1142,7 +1143,7 @@ class SwarmCLI:
                         settings.set("devussy_model", devussy_model)
                     
                     print(f"\n{Colors.MAGENTA}Starting Devussy pipeline...{Colors.RESET}\n")
-                    success, message = run_devussy_pipeline_sync(
+                    success, message = run_devussy_with_resume_option(
                         Path(project.root), 
                         verbose=False,
                         model=saved_model,

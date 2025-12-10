@@ -2561,7 +2561,8 @@ def select_project_cli() -> tuple[Project, str, bool, bool]:
     try:
         from core.devussy_integration import (
             check_devussy_available, 
-            run_devussy_pipeline_sync, 
+            run_devussy_pipeline_sync,
+            run_devussy_with_resume_option,
             load_devplan_for_swarm,
             select_devussy_model,
         )
@@ -2584,7 +2585,7 @@ def select_project_cli() -> tuple[Project, str, bool, bool]:
                     settings.set("devussy_model", devussy_model)
                 
                 console.print("\n[magenta]Starting Devussy pipeline...[/magenta]\n")
-                success, message = run_devussy_pipeline_sync(
+                success, message = run_devussy_with_resume_option(
                     Path(project.root), 
                     verbose=False,
                     model=saved_model,
@@ -2611,7 +2612,7 @@ def select_project_cli() -> tuple[Project, str, bool, bool]:
                     settings.set("devussy_model", devussy_model)
                 
                 console.print("\n[magenta]Starting Devussy pipeline...[/magenta]\n")
-                success, message = run_devussy_pipeline_sync(
+                success, message = run_devussy_with_resume_option(
                     Path(project.root), 
                     verbose=False,
                     model=saved_model,

@@ -16,6 +16,7 @@ In SWARM MODE, the devplan is generated with:
 """
 
 import asyncio
+import threading
 import shutil
 import sys
 import os
@@ -108,19 +109,19 @@ class DevussyPipelineRunner:
                 _render_splash,
             )
             from src.config import load_config
-            
+
             # Suppress splash in integrated mode
             os.environ["DEVUSSY_NO_SPLASH"] = "1"
-            
+
             # Output directly to the project's scratch folder
             self.ensure_directories()
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             project_name = self.project_path.name or "project"
-            
+
             # Use project's scratch/devussy folder for outputs
             self.output_dir = self.scratch_shared.parent / "devussy" / f"{project_name}_{timestamp}"
             self.output_dir.mkdir(parents=True, exist_ok=True)
-            
+
             print("\n" + "=" * 60)
             print("🔮 DEVUSSY PIPELINE - Project Planning")
             print("=" * 60)
@@ -128,39 +129,60 @@ class DevussyPipelineRunner:
             print(f"Output: {self.output_dir}")
             print("\nThis will guide you through defining your project.")
             print("The swarm will then execute the generated plan.\n")
-            
+
             if self.model:
                 print(f"📡 Using model: {self.model}\n")
-            
-            # Change to devussy directory so it can find its config files
+
             original_cwd = os.getcwd()
+            error: Optional[BaseException] = None
+
+            def _run_interactive() -> None:
+                nonlocal error
+                try:
+                    os.chdir(DEVUSSY_PATH)
+                    # Run the interactive design command (may use asyncio.run() internally)
+                    interactive_design(
+                        config_path=str(DEVUSSY_PATH / "config" / "config.yaml"),
+                        provider="requesty" if self.model else None,
+                        model=self.model,
+                        output_dir=str(self.output_dir),
+                        temperature=None,
+                        max_tokens=None,
+                        select_model=False,
+                        save_session=None,
+                        resume_session=None,
+                        llm_interview=True,
+                        scripted=False,
+                        streaming=True,  # Enable streaming for better UX
+                        verbose=verbose,
+                        debug=False,
+                    )
+                except BaseException as e:  # Capture all exceptions to re-raise in caller
+                    error = e
+                finally:
+                    os.chdir(original_cwd)
+
+            # If an event loop is already running (e.g. inside the swarm TUI),
+            # run the blocking Devussy CLI in a background thread so its internal
+            # asyncio.run() calls are not nested inside the main loop.
             try:
-                os.chdir(DEVUSSY_PATH)
-                
-                # Run the interactive design command
-                interactive_design(
-                    config_path=str(DEVUSSY_PATH / "config" / "config.yaml"),
-                    provider="requesty" if self.model else None,
-                    model=self.model,
-                    output_dir=str(self.output_dir),
-                    temperature=None,
-                    max_tokens=None,
-                    select_model=False,
-                    save_session=None,
-                    resume_session=None,
-                    llm_interview=True,
-                    scripted=False,
-                    streaming=True,  # Enable streaming for better UX
-                    verbose=verbose,
-                    debug=False,
-                )
-            finally:
-                # Always restore original directory
-                os.chdir(original_cwd)
-            
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = None
+
+            if loop and loop.is_running():
+                thread = threading.Thread(target=_run_interactive, daemon=True)
+                thread.start()
+                thread.join()
+            else:
+                _run_interactive()
+
+            if error is not None:
+                raise error
+
             # Find and copy the generated files to scratch/shared
             return self._copy_outputs_to_project()
-            
+
         except Exception as e:
             import traceback
             traceback.print_exc()
@@ -280,10 +302,473 @@ class DevussyPipelineRunner:
             return False, "No devussy output files found to copy"
 
 
+# =============================================================================
+# PIPELINE RESUME FUNCTIONALITY
+# =============================================================================
+
+# Pipeline stages in order (for resume selection)
+PIPELINE_STAGES = [
+    ("interview", "Interview / Q&A", ["interview_data.json"]),
+    ("project_design", "Project Design", ["project_design.md"]),
+    ("design_review", "Design Review", ["design_review.md"]),
+    ("basic_devplan", "Basic DevPlan", ["devplan.md"]),
+    ("detailed_devplan", "Detailed DevPlan", ["phase1.md", "phase2.md"]),
+    ("handoff", "Handoff Prompt", ["handoff_prompt.md"]),
+]
+
+
+def list_devussy_artifacts(project_path: Path) -> Dict[str, Any]:
+    """List all available devussy artifacts from a project.
+    
+    Searches the project's scratch/devussy folder for previous pipeline runs.
+    
+    Args:
+        project_path: Path to the swarm project
+        
+    Returns:
+        Dict with:
+        - runs: List of previous runs with their artifacts
+        - checkpoints: List of available checkpoints
+    """
+    result = {
+        "runs": [],
+        "checkpoints": [],
+        "latest_run": None,
+    }
+    
+    devussy_dir = project_path / "scratch" / "devussy"
+    
+    # Find all runs (timestamped folders)
+    if devussy_dir.exists():
+        for run_dir in sorted(devussy_dir.iterdir(), reverse=True):
+            if not run_dir.is_dir() or run_dir.name.startswith("."):
+                continue
+            
+            run_info = {
+                "path": str(run_dir),
+                "name": run_dir.name,
+                "artifacts": [],
+                "stages_complete": [],
+            }
+            
+            # Check which artifacts exist
+            artifact_files = [
+                ("project_design.md", "project_design", "Project Design"),
+                ("design_review.md", "design_review", "Design Review"),
+                ("devplan.md", "basic_devplan", "Basic DevPlan"),
+                ("handoff_prompt.md", "handoff", "Handoff Prompt"),
+                ("complexity_profile.md", "complexity", "Complexity Profile"),
+            ]
+            
+            for filename, stage, display_name in artifact_files:
+                if (run_dir / filename).exists():
+                    run_info["artifacts"].append(filename)
+                    run_info["stages_complete"].append(stage)
+            
+            # Check for phase files
+            phase_files = list(run_dir.glob("phase*.md"))
+            if phase_files:
+                run_info["artifacts"].extend([p.name for p in phase_files])
+                run_info["stages_complete"].append("detailed_devplan")
+                run_info["phase_count"] = len(phase_files)
+            
+            if run_info["artifacts"]:
+                result["runs"].append(run_info)
+                if not result["latest_run"]:
+                    result["latest_run"] = run_info
+    
+    # Find checkpoints from StateManager
+    try:
+        from src.state_manager import StateManager
+        sm = StateManager(str(project_path / ".devussy_state"))
+        checkpoints = sm.list_checkpoints()
+        result["checkpoints"] = checkpoints
+    except Exception as e:
+        print(f"[WARN] Could not load checkpoints: {e}")
+    
+    return result
+
+
+def select_resume_stage(artifacts: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Interactive selection of which stage to resume from.
+    
+    Args:
+        artifacts: Result from list_devussy_artifacts()
+        
+    Returns:
+        Dict with resume info (run, stage) or None if cancelled
+    """
+    runs = artifacts.get("runs", [])
+    checkpoints = artifacts.get("checkpoints", [])
+    
+    if not runs and not checkpoints:
+        print("\n❌ No previous devussy runs found.")
+        return None
+    
+    print("\n" + "=" * 60)
+    print("🔄 RESUME DEVUSSY PIPELINE")
+    print("=" * 60)
+    
+    options = []
+    
+    # List runs with their available stages
+    print("\n📁 Previous Runs:")
+    for i, run in enumerate(runs[:5], 1):  # Show last 5 runs
+        print(f"\n  {i}. {run['name']}")
+        stages = run.get("stages_complete", [])
+        print(f"     Stages: {', '.join(stages)}")
+        if "phase_count" in run:
+            print(f"     Phases: {run['phase_count']} files")
+        options.append(("run", run))
+    
+    # List checkpoints
+    if checkpoints:
+        print("\n💾 Checkpoints:")
+        for j, ckpt in enumerate(checkpoints[:5], len(runs) + 1):
+            print(f"  {j}. {ckpt['key']} ({ckpt['stage']}) - {ckpt['timestamp'][:16]}")
+            options.append(("checkpoint", ckpt))
+    
+    print(f"\n  0. Cancel / Start fresh")
+    print()
+    
+    choice = input("Select run/checkpoint to resume from [0]: ").strip()
+    
+    if not choice or choice == "0":
+        return None
+    
+    try:
+        idx = int(choice) - 1
+        if 0 <= idx < len(options):
+            option_type, option_data = options[idx]
+            
+            if option_type == "run":
+                # Ask which stage to resume from
+                run = option_data
+                stages = run.get("stages_complete", [])
+                
+                print(f"\n📍 Resume from which stage?")
+                for s_idx, stage in enumerate(stages, 1):
+                    print(f"  {s_idx}. After {stage}")
+                print(f"  0. Cancel")
+                
+                stage_choice = input("Stage [1]: ").strip() or "1"
+                s_idx = int(stage_choice) - 1
+                
+                if 0 <= s_idx < len(stages):
+                    return {
+                        "type": "run",
+                        "run_path": run["path"],
+                        "resume_after": stages[s_idx],
+                    }
+            else:
+                # Checkpoint
+                return {
+                    "type": "checkpoint",
+                    "checkpoint_key": option_data["key"],
+                    "stage": option_data["stage"],
+                }
+    except (ValueError, IndexError):
+        pass
+    
+    return None
+
+
+def resume_devussy_pipeline(
+    project_path: Path,
+    resume_info: Dict[str, Any],
+    model: Optional[str] = None,
+    verbose: bool = False,
+) -> Tuple[bool, str]:
+    """Resume devussy pipeline from a previous stage.
+    
+    Args:
+        project_path: Path to the swarm project
+        resume_info: Resume info from select_resume_stage()
+        model: Optional model override
+        verbose: Enable verbose output
+        
+    Returns:
+        Tuple of (success, message)
+    """
+    try:
+        from src.config import load_config
+        from src.state_manager import StateManager
+        from src.pipeline.compose import PipelineOrchestrator
+        from src.clients.factory import create_llm_client
+        from src.concurrency import ConcurrencyManager
+        from src.file_manager import FileManager
+        from src.models import DevPlan, ProjectDesign
+        
+        # Output to project's scratch folder
+        scratch_shared = project_path / "scratch" / "shared"
+        scratch_shared.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_dir = scratch_shared.parent / "devussy" / f"resume_{timestamp}"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        print("\n" + "=" * 60)
+        print("🔄 RESUMING DEVUSSY PIPELINE")
+        print("=" * 60)
+        print(f"\nOutput: {output_dir}")
+        
+        # Change to devussy directory
+        original_cwd = os.getcwd()
+        os.chdir(DEVUSSY_PATH)
+        
+        try:
+            # Load config and create components
+            config = load_config()
+            if model:
+                config.model = model
+            
+            llm_client = create_llm_client(config)
+            conc = ConcurrencyManager(config.max_concurrent_requests)
+            file_mgr = FileManager()
+            
+            orch = PipelineOrchestrator(
+                llm_client=llm_client,
+                concurrency_manager=conc,
+                file_manager=file_mgr,
+                git_config=config.git,
+                config=config,
+            )
+            
+            resume_type = resume_info.get("type")
+            
+            if resume_type == "checkpoint":
+                # Load from checkpoint
+                checkpoint_key = resume_info["checkpoint_key"]
+                sm = StateManager()
+                ckpt = sm.load_checkpoint(checkpoint_key)
+                
+                if not ckpt:
+                    return False, f"Checkpoint not found: {checkpoint_key}"
+                
+                data = ckpt.get("data", {})
+                stage = ckpt.get("stage", "")
+                
+                print(f"📍 Loaded checkpoint from stage: {stage}")
+                
+                # Resume based on stage
+                return _resume_from_checkpoint_data(
+                    orch, file_mgr, data, stage, output_dir, scratch_shared
+                )
+                
+            elif resume_type == "run":
+                # Load from artifacts
+                run_path = Path(resume_info["run_path"])
+                resume_after = resume_info["resume_after"]
+                
+                print(f"📍 Resuming after stage: {resume_after}")
+                print(f"📂 Loading from: {run_path}")
+                
+                return _resume_from_artifacts(
+                    orch, file_mgr, run_path, resume_after, output_dir, scratch_shared
+                )
+                
+        finally:
+            os.chdir(original_cwd)
+            
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return False, f"Resume failed: {e}"
+
+
+def _resume_from_checkpoint_data(
+    orch, file_mgr, data: Dict, stage: str, output_dir: Path, scratch_shared: Path
+) -> Tuple[bool, str]:
+    """Resume from checkpoint data based on stage."""
+    import asyncio
+    from src.models import DevPlan, ProjectDesign
+    
+    try:
+        if stage == "project_design":
+            # Have design, need devplan
+            design = ProjectDesign.model_validate(data["project_design"])
+            print("✅ Loaded project design, generating devplan...")
+            
+            # Generate basic devplan
+            basic = asyncio.run(orch.basic_devplan_gen.generate(
+                design.project_name,
+                design.summary or "",
+                design.tech_stack,
+            ))
+            
+            # Generate detailed devplan
+            detailed = asyncio.run(orch.detailed_devplan_gen.generate(
+                basic,
+                project_name=design.project_name,
+                tech_stack=design.tech_stack,
+            ))
+            
+            # Write outputs
+            _write_devplan_outputs(orch, file_mgr, detailed, design, output_dir)
+            _copy_to_shared(output_dir, scratch_shared)
+            
+            return True, "Resumed from project_design, generated devplan"
+            
+        elif stage == "basic_devplan":
+            # Have basic devplan, need detailed
+            design = ProjectDesign.model_validate(data["project_design"])
+            basic = DevPlan.model_validate(data["basic_devplan"])
+            
+            print("✅ Loaded basic devplan, generating detailed phases...")
+            
+            detailed = asyncio.run(orch.detailed_devplan_gen.generate(
+                basic,
+                project_name=design.project_name,
+                tech_stack=design.tech_stack,
+            ))
+            
+            _write_devplan_outputs(orch, file_mgr, detailed, design, output_dir)
+            _copy_to_shared(output_dir, scratch_shared)
+            
+            return True, "Resumed from basic_devplan, generated detailed phases"
+            
+        elif stage == "detailed_devplan":
+            # Have detailed devplan, just need handoff
+            design = ProjectDesign.model_validate(data["project_design"])
+            detailed = DevPlan.model_validate(data["detailed_devplan"])
+            
+            print("✅ Loaded detailed devplan, generating handoff...")
+            
+            handoff = orch.handoff_gen.generate(
+                devplan=detailed,
+                project_name=design.project_name,
+                project_summary=detailed.summary or "",
+                architecture_notes=design.architecture_overview or "",
+            )
+            
+            file_mgr.write_markdown(str(output_dir / "handoff_prompt.md"), handoff.content)
+            
+            # Also write devplan outputs
+            _write_devplan_outputs(orch, file_mgr, detailed, design, output_dir)
+            _copy_to_shared(output_dir, scratch_shared)
+            
+            return True, "Resumed from detailed_devplan, generated handoff"
+            
+        else:
+            return False, f"Unknown stage: {stage}"
+            
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return False, f"Resume from checkpoint failed: {e}"
+
+
+def _resume_from_artifacts(
+    orch, file_mgr, run_path: Path, resume_after: str, output_dir: Path, scratch_shared: Path
+) -> Tuple[bool, str]:
+    """Resume from artifact files."""
+    import asyncio
+    import json
+    
+    try:
+        # Try to load project design from markdown (parse key fields)
+        design_file = run_path / "project_design.md"
+        if not design_file.exists():
+            return False, "project_design.md not found in run folder"
+        
+        design_content = design_file.read_text(encoding="utf-8")
+        
+        # Extract project name from title
+        import re
+        name_match = re.search(r'^#\s+(.+?)(?:\n|$)', design_content, re.MULTILINE)
+        project_name = name_match.group(1).strip() if name_match else "Project"
+        
+        # Copy existing artifacts to output
+        print(f"📋 Copying existing artifacts from {run_path.name}...")
+        for src_file in run_path.glob("*.md"):
+            dst_file = output_dir / src_file.name
+            shutil.copy2(src_file, dst_file)
+        
+        if resume_after == "project_design":
+            # Need to regenerate from design
+            print("🔄 Regenerating devplan from project design...")
+            
+            # Try to load from checkpoint if available
+            try:
+                from src.state_manager import StateManager
+                sm = StateManager()
+                ckpt = sm.load_checkpoint(f"{project_name}_pipeline")
+                if ckpt and "project_design" in ckpt.get("data", {}):
+                    return _resume_from_checkpoint_data(
+                        orch, file_mgr, ckpt["data"], "project_design", output_dir, scratch_shared
+                    )
+            except:
+                pass
+            
+            # Fallback: just copy artifacts
+            _copy_to_shared(output_dir, scratch_shared)
+            return True, "Copied artifacts - manual devplan regeneration may be needed"
+            
+        elif resume_after in ("basic_devplan", "detailed_devplan"):
+            # Just copy the existing files
+            _copy_to_shared(output_dir, scratch_shared)
+            return True, f"Copied artifacts from {resume_after} stage"
+            
+        elif resume_after == "handoff":
+            # Everything is done, just copy
+            _copy_to_shared(output_dir, scratch_shared)
+            return True, "Copied all artifacts (pipeline was complete)"
+            
+        else:
+            _copy_to_shared(output_dir, scratch_shared)
+            return True, "Copied available artifacts"
+            
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return False, f"Resume from artifacts failed: {e}"
+
+
+def _write_devplan_outputs(orch, file_mgr, devplan, design, output_dir: Path):
+    """Write devplan and phase files to output directory."""
+    # Write devplan.md
+    devplan_md = orch._devplan_to_markdown(devplan)
+    file_mgr.write_markdown(str(output_dir / "devplan.md"), devplan_md)
+    
+    # Write phase files
+    for phase in devplan.phases:
+        phase_md = orch._phase_to_markdown(phase, devplan)
+        file_mgr.write_markdown(str(output_dir / f"phase{phase.number}.md"), phase_md)
+    
+    print(f"✅ Wrote devplan.md + {len(devplan.phases)} phase files")
+
+
+def _copy_to_shared(output_dir: Path, scratch_shared: Path):
+    """Copy outputs to project's scratch/shared folder."""
+    scratch_shared.mkdir(parents=True, exist_ok=True)
+    
+    files_to_copy = {
+        "devplan.md": "devplan.md",
+        "project_design.md": "project_design.md",
+        "handoff_prompt.md": "handoff.md",
+    }
+    
+    copied = []
+    for src_name, dst_name in files_to_copy.items():
+        src = output_dir / src_name
+        if src.exists():
+            shutil.copy2(src, scratch_shared / dst_name)
+            copied.append(dst_name)
+    
+    # Copy phase files
+    phases_dir = scratch_shared / "phases"
+    phases_dir.mkdir(exist_ok=True)
+    for phase_file in output_dir.glob("phase*.md"):
+        shutil.copy2(phase_file, phases_dir / phase_file.name)
+        copied.append(f"phases/{phase_file.name}")
+    
+    print(f"📋 Copied to shared: {', '.join(copied)}")
+
+
 def run_devussy_pipeline_sync(
     project_path: Path, 
     verbose: bool = False,
     model: Optional[str] = None,
+    run_bootstrap: bool = True,
 ) -> Tuple[bool, str]:
     """Synchronous wrapper to run the devussy pipeline.
     
@@ -291,6 +776,7 @@ def run_devussy_pipeline_sync(
         project_path: Path to the swarm project
         verbose: Enable verbose output
         model: Optional model override (e.g., "anthropic/claude-sonnet-4-20250514")
+        run_bootstrap: If True, run project bootstrap (venv, npm, etc.)
         
     Returns:
         Tuple of (success: bool, message: str)
@@ -305,8 +791,166 @@ def run_devussy_pipeline_sync(
             message += " + task_queue.md generated"
         except Exception as e:
             print(f"[WARN] Could not generate task queue: {e}")
+        
+        # Run project bootstrap (venv, npm install, etc.)
+        if run_bootstrap:
+            try:
+                from core.project_bootstrap import ProjectBootstrap
+                print("\n" + "=" * 60)
+                print("🔧 PHASE 0: Project Bootstrap")
+                print("=" * 60)
+                bootstrap = ProjectBootstrap(project_path)
+                bootstrap.set_log_callback(lambda msg: print(f"  {msg}"))
+                result = bootstrap.run_bootstrap()
+                
+                if result["success"]:
+                    message += " + bootstrap complete"
+                    types = [k for k, v in result["project_types"].items() if v]
+                    if types:
+                        print(f"\n  Project types: {', '.join(types)}")
+                    if result.get("venv_status") and "created" in result["venv_status"]:
+                        print("  ✅ Python .venv created")
+                    if result.get("node_status") and "completed" in result["node_status"]:
+                        print("  ✅ npm dependencies installed")
+                else:
+                    message += f" + bootstrap issues: {result['errors']}"
+            except Exception as e:
+                print(f"[WARN] Bootstrap failed: {e}")
+                message += f" + bootstrap failed: {e}"
     
     return success, message
+
+
+def run_devussy_with_resume_option(
+    project_path: Path,
+    verbose: bool = False,
+    model: Optional[str] = None,
+    run_bootstrap: bool = True,
+) -> Tuple[bool, str]:
+    """Run devussy pipeline with option to resume from previous run.
+    
+    This is the recommended entry point - it checks for previous runs
+    and offers the user a choice to resume or start fresh.
+    
+    Args:
+        project_path: Path to the swarm project
+        verbose: Enable verbose output
+        model: Optional model override
+        run_bootstrap: Run project bootstrap after pipeline
+        
+    Returns:
+        Tuple of (success, message)
+    """
+    # Check for existing artifacts
+    artifacts = list_devussy_artifacts(project_path)
+    
+    if artifacts.get("runs") or artifacts.get("checkpoints"):
+        # Offer choice
+        print("\n" + "=" * 60)
+        print("🔮 DEVUSSY PIPELINE")
+        print("=" * 60)
+        print("\nPrevious runs detected!")
+        print()
+        print("  1. Start fresh (new interview)")
+        print("  2. Resume from previous run/checkpoint")
+        print("  3. Cancel")
+        print()
+        
+        choice = input("Choice [1]: ").strip() or "1"
+        
+        if choice == "2":
+            # Resume flow
+            resume_info = select_resume_stage(artifacts)
+            if resume_info:
+                success, message = resume_devussy_pipeline(
+                    project_path, resume_info, model=model, verbose=verbose
+                )
+                
+                if success:
+                    # Generate task queue and run bootstrap
+                    try:
+                        generate_swarm_task_queue(project_path)
+                        message += " + task_queue.md generated"
+                    except Exception as e:
+                        print(f"[WARN] Could not generate task queue: {e}")
+                    
+                    if run_bootstrap:
+                        try:
+                            from core.project_bootstrap import ProjectBootstrap
+                            print("\n" + "=" * 60)
+                            print("🔧 PHASE 0: Project Bootstrap")
+                            print("=" * 60)
+                            bootstrap = ProjectBootstrap(project_path)
+                            bootstrap.set_log_callback(lambda msg: print(f"  {msg}"))
+                            result = bootstrap.run_bootstrap()
+                            if result["success"]:
+                                message += " + bootstrap complete"
+                        except Exception as e:
+                            print(f"[WARN] Bootstrap failed: {e}")
+                
+                return success, message
+            else:
+                print("\n📋 Resume cancelled, starting fresh...")
+        elif choice == "3":
+            return False, "Cancelled by user"
+    
+    # Start fresh
+    return run_devussy_pipeline_sync(
+        project_path, 
+        verbose=verbose, 
+        model=model, 
+        run_bootstrap=run_bootstrap
+    )
+
+
+def copy_artifacts_to_new_project(
+    source_run_path: Path,
+    target_project_path: Path,
+    stages_to_copy: Optional[List[str]] = None,
+) -> Tuple[bool, str]:
+    """Copy devussy artifacts from one project/run to a new project.
+    
+    This allows creating a new project based on artifacts from a previous run.
+    
+    Args:
+        source_run_path: Path to the source devussy run folder
+        target_project_path: Path to the target project
+        stages_to_copy: Optional list of stages to copy (defaults to all)
+        
+    Returns:
+        Tuple of (success, message)
+    """
+    try:
+        target_devussy = target_project_path / "scratch" / "devussy"
+        target_devussy.mkdir(parents=True, exist_ok=True)
+        
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        target_run = target_devussy / f"imported_{timestamp}"
+        target_run.mkdir()
+        
+        copied = []
+        
+        # Copy all markdown files
+        for src_file in source_run_path.glob("*.md"):
+            shutil.copy2(src_file, target_run / src_file.name)
+            copied.append(src_file.name)
+        
+        # Copy any JSON files (interview data, etc.)
+        for src_file in source_run_path.glob("*.json"):
+            shutil.copy2(src_file, target_run / src_file.name)
+            copied.append(src_file.name)
+        
+        print(f"✅ Copied {len(copied)} files to {target_run}")
+        
+        # Also copy to shared folder
+        _copy_to_shared(target_run, target_project_path / "scratch" / "shared")
+        
+        return True, f"Imported artifacts: {', '.join(copied)}"
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return False, f"Import failed: {e}"
 
 
 # Fallback models if API fetch fails
@@ -581,6 +1225,22 @@ def parse_devplan_tasks(content: str, project_context: Optional[Dict] = None) ->
         done_match = re.search(r"@done_when:\s*([^\n]+)", task_content, re.IGNORECASE)
         done_when = done_match.group(1).strip() if done_match else "Task completed as specified"
 
+        # NEW: Parse complexity for task batching
+        complexity_match = re.search(r"@complexity:\s*(trivial|simple|medium|complex)", task_content, re.IGNORECASE)
+        complexity = complexity_match.group(1).lower() if complexity_match else infer_task_complexity(task_content)
+        
+        # NEW: Parse parallel_safe flag
+        parallel_match = re.search(r"@parallel_safe:\s*(true|false)", task_content, re.IGNORECASE)
+        parallel_safe = parallel_match.group(1).lower() == "true" if parallel_match else True
+        
+        # NEW: Parse batch_with for task grouping
+        batch_match = re.search(r"@batch_with:\s*([^\n]+)", task_content, re.IGNORECASE)
+        batch_with: List[str] = []
+        if batch_match:
+            batch_text = batch_match.group(1).strip()
+            if batch_text.lower() != "none":
+                batch_with = [b.strip() for b in batch_text.split(",") if b.strip()]
+
         # Extract file paths mentioned
         files: List[str] = []
         file_paths = re.findall(r"shared/[\w/.-]+\.\w+", task_content)
@@ -598,6 +1258,10 @@ def parse_devplan_tasks(content: str, project_context: Optional[Dict] = None) ->
                 "files": files,
                 "content": task_content,
                 "status": "pending",
+                # NEW: Batching/parallel fields
+                "complexity": complexity,
+                "parallel_safe": parallel_safe,
+                "batch_with": batch_with,
             }
         )
 
@@ -745,6 +1409,49 @@ def infer_agent_from_content(content: str, project_context: Optional[Dict] = Non
         return "database_specialist"
     
     return "backend_dev"  # Default
+
+
+def infer_task_complexity(content: str) -> str:
+    """Infer task complexity from content if not explicitly specified.
+    
+    Complexity levels:
+    - trivial: <5 min, single file, config/import changes
+    - simple: <15 min, 1-2 files, single function
+    - medium: 15-60 min, multiple files, full module
+    - complex: >1h, architectural changes
+    
+    Args:
+        content: Task content to analyze
+        
+    Returns:
+        Complexity level string
+    """
+    import re
+    content_lower = content.lower()
+    
+    # Count files mentioned
+    file_count = len(re.findall(r"shared/[\w/.-]+\.\w+", content))
+    
+    # Count implementation steps
+    step_count = len(re.findall(r"^\s*\d+\.", content, re.MULTILINE))
+    
+    # Trivial indicators - quick config/setup changes
+    trivial_words = ["config", "import", "update", "fix", "tweak", "add line", "rename", 
+                     "set ", "change ", "modify setting"]
+    if any(w in content_lower for w in trivial_words) and file_count <= 1 and step_count <= 2:
+        return "trivial"
+    
+    # Complex indicators - major architectural work
+    complex_words = ["architecture", "refactor", "redesign", "migrate", "overhaul", 
+                     "system", "entire", "complete rewrite", "from scratch"]
+    if any(w in content_lower for w in complex_words) or file_count > 5:
+        return "complex"
+    
+    # Simple vs medium based on scope
+    if file_count <= 2 and step_count <= 3:
+        return "simple"
+    
+    return "medium"
 
 
 def generate_task_queue_markdown(tasks: List[Dict[str, Any]], max_phase: int = 1) -> str:

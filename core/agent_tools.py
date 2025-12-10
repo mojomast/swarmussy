@@ -1485,6 +1485,7 @@ class AgentToolExecutor:
         logger.info(f"[{self.agent_name}] Completed task {task_id} via complete_my_task tool")
         
         # Update orchestrator state for real-time dashboard
+        orch_task_id = None
         try:
             from core.swarm_orchestrator import get_orchestrator
             orchestrator = get_orchestrator()
@@ -1499,6 +1500,17 @@ class AgentToolExecutor:
                     logger.debug(f"Orchestrator updated: task {orch_task_id} completed")
         except Exception as e:
             logger.debug(f"Could not update orchestrator: {e}")
+        
+        # Release file ownership for completed task
+        if orch_task_id:
+            try:
+                from core.file_ownership import get_file_tracker
+                tracker = get_file_tracker()
+                if tracker:
+                    tracker.release_task(orch_task_id)
+                    logger.debug(f"Released file ownership for task {orch_task_id}")
+            except Exception as e:
+                logger.debug(f"Could not release file ownership: {e}")
 
         # BROADCAST COMPLETION SUMMARY so it's always visible in chat
         summary_preview = result_summary if result_summary else "Task completed"

@@ -190,6 +190,14 @@ class SessionController:
         except Exception as e:
             logger.warning(f"Orchestrator init failed: {e}")
             self._orchestrator = None
+        
+        # Initialize file ownership tracker for collision prevention
+        try:
+            from core.file_ownership import init_file_tracker
+            init_file_tracker(Path(self._project.root))
+            logger.debug("File ownership tracker initialized")
+        except Exception as e:
+            logger.warning(f"File tracker init failed: {e}")
     
     def _get_devussy_architect_prompt(self) -> Optional[str]:
         """Get the devussy-specific architect prompt."""
