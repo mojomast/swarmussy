@@ -355,3 +355,99 @@ If tests fail or you need clarification, check:
 
 *Generated: December 2024*
 *Status: Ready for testing*
+
+---
+
+## Manual Testing: Devussy DevPlan + AutoDispatcher (December 2025)
+
+These tests validate the new **SwarmOrchestrator + AutoDispatcher** flow for Devussy-generated projects, and confirm that the Architect no longer burns excessive tokens on dispatch.
+
+### Prerequisites
+
+- A Devussy-generated project under `projects/<name>/` (e.g. `projects/doomussy3`).
+- Devussy artifacts present in `projects/<name>/scratch/shared/`:
+  - `devplan.md` – phase/task breakdown with anchors and `@agent:` tags.
+  - `phases/phaseN.md` – detailed phase files.
+  - `task_queue.md` – preformatted `assign_task()` commands.
+- SwarmOrchestrator + AutoDispatcher code in place:
+  - `core/swarm_orchestrator.py`
+  - `core/auto_dispatcher.py`
+  - `agents/architect.py` with updated `should_respond`
+  - `dashboard_tui.py` with `go` → `_handle_go_command()` integration
+
+### 1. "go" Uses AutoDispatcher (No Architect Tokens)
+
+1. Run the TUI from the repo root:
+   ```bash
+   python main.py --tui
+   ```
+2. Select the Devussy project (e.g. `doomussy3`) and your username.
+3. Answer the "Load previous messages?" prompt as desired (either is fine for this test).
+4. Wait for the DevPlan summary in the right sidebar; it should show:
+   - Total tasks and phases.
+   - Current phase and task counts.
+5. Type:
+   ```
+   go
+   ```
+6. Verify in the TUI:
+   - Chat log shows `🚀 AutoDispatcher: Starting task dispatch (no LLM needed)...`.
+   - **Bossy McArchitect does not reply** to this `go` message.
+   - An entry like `🤖 AutoDispatch: Dispatching Task 1.1: ...` appears.
+   - Codey McBackend (or another worker) receives Task `1.1` and starts working.
+7. Open the TOKENS panel:
+   - Confirm **no Architect token usage** for this round (only the worker should accrue tokens).
+
+### 2. Task State Persistence + Devussy Task Queue Update
+
+1. Let the worker finish Task `1.1` and call `complete_my_task`.
+2. Watch the chat log:
+   - You should see a `✅ **Task Complete**` system notice.
+   - AutoDispatcher should log that it is dispatching the next task (e.g. Task `1.2`).
+3. Inspect the Devussy artifacts under `projects/<name>/scratch/shared/`:
+   - `task_state.json` should exist and mark Task `1.1` as `COMPLETED`.
+   - `task_queue.md` should show Task `1.1` with:
+     - `**Status:** `✅ completed`` (or similar, with emoji).
+4. Stop the TUI (Ctrl+Q), restart it, and reload the same project.
+5. Type `go` again and verify:
+   - AutoDispatcher skips Task `1.1` and dispatches the next pending task.
+   - No previously completed tasks are reassigned.
+
+### 3. Architect Passivity in Devussy Mode
+
+1. While a Devussy project is active, send several messages:
+   - `go`
+   - "auto orchestrator please continue" (or similar)
+2. Verify that Bossy McArchitect **only** responds when directly asked for design/plan help, e.g.:
+   - "Architect, explain the current phase plan."
+   - "Bossy, can you adjust the devplan to add a logging layer?"
+3. Confirm that:
+   - The Architect does **not** respond to raw `go`.
+   - Auto Orchestrator system messages (e.g. phase milestones) do **not** trigger Architect replies unless you ask explicitly.
+
+### 4. Truncated API History Panel
+
+1. In TUI mode, let workers run through several tasks so multiple API calls appear.
+2. Expand the **API History** panel in the right sidebar.
+3. Click an entry repeatedly to cycle detail levels:
+   - Level 0: collapsed header.
+   - Level 1: summary (model, time, total tokens, short previews).
+   - Level 2: truncated request/response + tool calls.
+4. Confirm that at Level 2:
+   - Request messages are capped to ~200 characters and 5 lines per message.
+   - Response content is limited to ~10 lines, 100 characters per line.
+   - Tool call details show at most 5 calls with up to 3 arguments each, truncated to ~100 characters.
+
+This validates that the API history panel is informative without re-exposing giant contexts to the model.
+
+### 5. Regression: Non-Devussy Projects Still Use Architect
+
+1. Create or open a non-Devussy project (no Devussy `devplan.md` / `task_queue.md`).
+2. Run `python main.py --tui` and select this project.
+3. Interact with Bossy as usual (describe a new project, ask for a plan, etc.).
+4. Verify that:
+   - Architect still handles planning and initial task assignment.
+   - AutoDispatcher does **not** interfere when Devussy artifacts are missing.
+
+If all the above tests pass, the new orchestration path is working and Architect token usage for Devussy projects should be dramatically lower.
+

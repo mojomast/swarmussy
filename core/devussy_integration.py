@@ -495,7 +495,23 @@ def generate_swarm_task_queue(project_path: Path) -> None:
 
 def parse_devplan_tasks(content: str, project_context: Optional[Dict] = None) -> List[Dict[str, Any]]:
     """Parse tasks from devplan/phase content.
-    
+
+    Handles multiple formats:
+    - "### Task 1.1: Title"
+    - "### Step 1.1: Title"
+    - "## 1.1: Title"
+    - "## Phase 1.1: Title"
+    - "1.1: Title" (at line start)
+    - "- [ ] 1.1: Title" checklist bullets (new Devussy phase format)
+
+    Also overlays status/agent information from TASK_ anchors like:
+
+        <!-- TASK_1_1_START -->
+        task: 1.1
+        status: pending
+        agent: backend_dev
+        <!-- TASK_1_1_END -->
+
     Args:
         content: Markdown content
         project_context: Optional dict with project_type, primary_language, frameworks
@@ -504,52 +520,154 @@ def parse_devplan_tasks(content: str, project_context: Optional[Dict] = None) ->
         List of task dictionaries
     """
     import re
-    
-    tasks = []
-    
-    # Pattern for task headers like "### Task 1.1:" or "### Step 1.1:" or just "1.1:"
-    task_pattern = re.compile(
-        r'###?\s*(?:Task|Step)?\s*(\d+\.\d+)[:\s]+(.+?)(?=\n###|\n##|\Z)',
-        re.DOTALL | re.IGNORECASE
-    )
-    
-    for match in task_pattern.finditer(content):
-        task_num = match.group(1)
-        task_content = match.group(2).strip()
-        
-        # Extract title (first line)
+
+    tasks: List[Dict[str, Any]] = []
+    seen_task_ids = set()  # Prevent duplicates
+
+    # ---------------------------------------------------------------------
+    # 1) Heading-style task formats (backwards compatible)
+    # ---------------------------------------------------------------------
+    heading_patterns = [
+        # Format: ### Task 1.1: Title (with content until next header)
+        (r"###?\s*Task\s+(\d+)\.(\d+)[:\s]+(.+?)(?=\n###|\n##|\Z)", "task"),
+        # Format: ### Step 1.1: Title
+        (r"###?\s*Step\s+(\d+)\.(\d+)[:\s]+(.+?)(?=\n###|\n##|\Z)", "step"),
+        # Format: ## 1.1: Title (common in older phase files)
+        (r"^##\s*(\d+)\.(\d+)[:\s]+(.+?)(?=\n##|\Z)", "section"),
+        # Format: ## Phase 1.1: Title
+        (r"##\s*Phase\s+(\d+)\.(\d+)[:\s]+(.+?)(?=\n##|\Z)", "phase_section"),
+        # Format: 1.1: Title (standalone, less greedy)
+        (r"^(\d+)\.(\d+):\s*(.+?)(?=\n\d+\.\d+:|\n##|\n###|\Z)", "bare"),
+    ]
+
+    def _add_task(phase_num: str, task_num: str, task_content: str) -> None:
+        """Helper to normalize and append a task if not already seen."""
+        task_id = f"{phase_num}.{task_num}"
+        if task_id in seen_task_ids:
+            return
+        seen_task_ids.add(task_id)
+
+        # Extract title (first line, clean up trailing ### and link artifacts)
         lines = task_content.split("\n")
-        title = lines[0].strip() if lines else f"Task {task_num}"
-        
-        # Try to find agent assignment
-        agent_match = re.search(r'@agent:\s*(\w+)', task_content, re.IGNORECASE)
+        title = lines[0].strip() if lines else f"Task {task_id}"
+        title = re.sub(r"\s*#+\s*$", "", title)  # Remove trailing ###
+        title = re.sub(r"\[.*?\]", "", title).strip()  # Remove [link] artifacts
+
+        if not title or title.startswith("|") or len(title) < 3:
+            return
+
+        # Try to find @agent: inline
+        agent_match = re.search(r"@agent:\s*(\w+)", task_content, re.IGNORECASE)
         agent = agent_match.group(1).lower() if agent_match else None
-        
-        # Infer agent if not assigned, using project context
+
+        # Infer agent if not assigned, using project context and content
         if not agent:
             agent = infer_agent_from_content(task_content, project_context)
-        
-        # Extract other metadata
-        priority_match = re.search(r'@priority:\s*(high|medium|low)', task_content, re.IGNORECASE)
+
+        # Priority / depends / done_when / goal
+        priority_match = re.search(r"@priority:\s*(high|medium|low)", task_content, re.IGNORECASE)
         priority = priority_match.group(1).lower() if priority_match else "medium"
-        
-        depends_match = re.search(r'@depends:\s*([^\n]+)', task_content, re.IGNORECASE)
-        depends = []
+
+        depends_match = re.search(r"@depends:\s*([^\n]+)", task_content, re.IGNORECASE)
+        depends: List[str] = []
         if depends_match:
             deps_text = depends_match.group(1).strip()
             if deps_text.lower() != "none":
                 depends = [d.strip() for d in deps_text.split(",") if d.strip()]
-        
-        tasks.append({
-            "number": task_num,
-            "title": title,
-            "agent": agent,
-            "priority": priority,
-            "depends": depends,
-            "content": task_content,
-            "status": "pending",
-        })
-    
+
+        goal_match = re.search(r"\*\*Goal:\*\*\s*(.+?)(?:\n\n|\n\*\*|$)", task_content, re.DOTALL)
+        goal = goal_match.group(1).strip() if goal_match else title
+
+        done_match = re.search(r"@done_when:\s*([^\n]+)", task_content, re.IGNORECASE)
+        done_when = done_match.group(1).strip() if done_match else "Task completed as specified"
+
+        # Extract file paths mentioned
+        files: List[str] = []
+        file_paths = re.findall(r"shared/[\w/.-]+\.\w+", task_content)
+        files.extend(file_paths)
+
+        tasks.append(
+            {
+                "number": task_id,
+                "title": title,
+                "agent": agent,
+                "priority": priority,
+                "depends": depends,
+                "goal": goal,
+                "done_when": done_when,
+                "files": files,
+                "content": task_content,
+                "status": "pending",
+            }
+        )
+
+    # Parse heading-style tasks first
+    for pattern, fmt_type in heading_patterns:
+        flags = re.DOTALL | re.MULTILINE
+        for match in re.finditer(pattern, content, flags):
+            phase_num = match.group(1)
+            task_num = match.group(2)
+            task_content = match.group(3).strip()
+            _add_task(phase_num, task_num, task_content)
+
+    # ---------------------------------------------------------------------
+    # 2) Checklist-style tasks: "- [ ] 1.1: Title" (new Devussy format)
+    # ---------------------------------------------------------------------
+    checklist_pattern = re.compile(
+        r"^\s*-\s*\[[ xX]\]\s*(\d+)\.(\d+):\s*(.+?)(?=^\s*-\s*\[[ xX]\]\s*\d+\.\d+:|\Z)",
+        re.MULTILINE | re.DOTALL,
+    )
+
+    for match in checklist_pattern.finditer(content):
+        phase_num = match.group(1)
+        task_num = match.group(2)
+        body = match.group(3).rstrip()
+
+        # Normalize content: first line is the title, rest is detailed steps
+        lines = body.split("\n")
+        title_line = lines[0].strip() if lines else ""
+        rest = "\n".join(lines[1:]) if len(lines) > 1 else ""
+        task_content = title_line + ("\n" + rest if rest else "")
+
+        _add_task(phase_num, task_num, task_content)
+
+    # ---------------------------------------------------------------------
+    # 3) Overlay TASK_ anchors for status / explicit agent assignments
+    # ---------------------------------------------------------------------
+    if tasks:
+        task_by_id = {t["number"]: t for t in tasks}
+
+        anchor_pattern = re.compile(
+            r"<!--\s*TASK_(\d+)_(\d+)_START\s*-->"  # opening anchor
+            r"(.*?)"  # inner block
+            r"<!--\s*TASK_\\1_\\2_END\s*-->",  # closing anchor
+            re.DOTALL | re.IGNORECASE,
+        )
+
+        for match in anchor_pattern.finditer(content):
+            phase_num = match.group(1)
+            task_num = match.group(2)
+            inner = match.group(3)
+            task_id = f"{phase_num}.{task_num}"
+
+            task = task_by_id.get(task_id)
+            if not task:
+                continue
+
+            status_match = re.search(r"status:\s*([a-z_]+)", inner, re.IGNORECASE)
+            agent_match = re.search(r"agent:\s*([a-zA-Z_]+)", inner, re.IGNORECASE)
+
+            if status_match:
+                task["status"] = status_match.group(1).lower()
+
+            if agent_match:
+                agent_val = agent_match.group(1).lower()
+                if agent_val and agent_val != "unassigned":
+                    task["agent"] = agent_val
+
+    # Sort by task number for deterministic ordering
+    tasks.sort(key=lambda t: (int(t["number"].split(".")[0]), int(t["number"].split(".")[1])))
+
     return tasks
 
 
@@ -629,90 +747,153 @@ def infer_agent_from_content(content: str, project_context: Optional[Dict] = Non
     return "backend_dev"  # Default
 
 
-def generate_task_queue_markdown(tasks: List[Dict[str, Any]]) -> str:
+def generate_task_queue_markdown(tasks: List[Dict[str, Any]], max_phase: int = 1) -> str:
     """Generate markdown task queue for the Architect.
+    
+    Creates a simple, copy-paste ready task dispatch file.
+    The Architect just needs to spawn workers and copy the commands.
+    
+    IMPORTANT: Only includes tasks up to max_phase to keep context small.
+    Default is Phase 1 only (~5KB instead of 60KB for 153 tasks).
     
     Args:
         tasks: List of parsed task dictionaries
+        max_phase: Maximum phase to include (default 1 to keep context small)
         
     Returns:
         Markdown content
     """
+    from core.swarm_anchors import AGENT_ROLES, STATUS_PENDING
+    
+    # Agent emoji mapping
+    AGENT_EMOJI = {
+        "backend_dev": "⚙️",
+        "frontend_dev": "🎨",
+        "qa_engineer": "🐛",
+        "devops": "🚀",
+        "tech_writer": "📝",
+    }
+    
+    # Filter to only include tasks up to max_phase
+    filtered_tasks = [
+        t for t in tasks 
+        if int(t["number"].split(".")[0]) <= max_phase
+    ]
+    
     lines = [
         "# 🚀 Swarm Task Queue",
         "",
-        "Pre-assigned tasks ready for dispatch. The Architect should:",
-        "1. Read this file at session start",
-        "2. Dispatch tasks in order (respecting dependencies)",
-        "3. Update task status as agents complete work",
+        "## ⚠️ IMPORTANT: Execute assign_task() tool calls!",
+        "The code blocks below are NOT just documentation - you must EXECUTE them as tool calls.",
+        "",
+        "## How to Use",
+        "1. `spawn_worker(role)` for each needed agent type",
+        "2. **EXECUTE** each `assign_task()` below as a tool call (don't just read it!)",
+        "3. Say 'Dispatched N tasks.' then STOP",
         "",
         "---",
-        "",
-        "## Agent Summary",
         "",
     ]
     
-    # Count tasks per agent
-    agent_counts = {}
+    # Count tasks per agent (for ALL tasks - show full picture)
+    all_agent_counts = {}
     for task in tasks:
-        agent = task.get("agent", "unassigned")
-        agent_counts[agent] = agent_counts.get(agent, 0) + 1
+        agent = task.get("agent", "backend_dev")
+        all_agent_counts[agent] = all_agent_counts.get(agent, 0) + 1
     
-    for agent, count in sorted(agent_counts.items()):
+    # Count phases
+    all_phases = set(int(t["number"].split(".")[0]) for t in tasks)
+    total_phases = len(all_phases)
+    
+    lines.append("## Project Summary")
+    lines.append(f"**Total:** {len(tasks)} tasks across {total_phases} phases")
+    lines.append(f"**This file shows:** Phase 1 only ({len(filtered_tasks)} tasks)")
+    lines.append("")
+    lines.append("### Agents Needed:")
+    for agent, count in sorted(all_agent_counts.items()):
         agent_info = SWARM_AGENTS.get(agent, {"name": agent})
-        lines.append(f"- **{agent_info.get('name', agent)}** ({agent}): {count} tasks")
+        emoji = AGENT_EMOJI.get(agent, "🤖")
+        lines.append(f"- {emoji} **{agent_info.get('name', agent)}**: {count} total tasks")
+    lines.append("")
+    lines.append("---")
+    lines.append("")
     
-    lines.extend([
-        "",
-        "---",
-        "",
-        "## Task Queue",
-        "",
-    ])
-    
-    current_phase = None
-    for task in tasks:
-        # Group by phase
+    # Group filtered tasks by phase (Phase 1 only by default)
+    phases = {}
+    for task in filtered_tasks:
         phase_num = task["number"].split(".")[0]
-        if phase_num != current_phase:
-            current_phase = phase_num
-            lines.append(f"### Phase {phase_num}")
+        if phase_num not in phases:
+            phases[phase_num] = []
+        phases[phase_num].append(task)
+    
+    for phase_num in sorted(phases.keys(), key=int):
+        phase_tasks = phases[phase_num]
+        lines.append(f"## Phase {phase_num}")
+        lines.append("")
+        
+        for task in phase_tasks:
+            agent = task.get("agent", "backend_dev")
+            agent_info = SWARM_AGENTS.get(agent, {"name": agent})
+            agent_name = agent_info.get("name", agent)
+            emoji = AGENT_EMOJI.get(agent, "🤖")
+            
+            # Get task details
+            goal = task.get("goal") or task.get("title", "Complete the task")
+            files = task.get("files", [])
+            done_when = task.get("done_when", "Task completed as specified")
+            
+            # Build files string
+            if files:
+                files_str = "\n".join(f"- {f}" for f in files[:5])
+            else:
+                files_str = "- (see task description)"
+            
+            # Build requirements from task content
+            content = task.get("content", "")
+            reqs = []
+            for line in content.split("\n"):
+                line = line.strip()
+                if line.startswith("- ") and len(line) > 10:
+                    reqs.append(line)
+                    if len(reqs) >= 3:
+                        break
+            reqs_str = "\n".join(reqs) if reqs else "- See task description above"
+            
+            # Task header with emoji
+            lines.append(f"### {emoji} Task {task['number']}: {task['title']}")
+            lines.append(f"**Agent:** {agent_name} (`{agent}`)")
+            lines.append(f"**Status:** `{task['status']}`")
+            if task.get('depends'):
+                lines.append(f"**Depends:** {', '.join(task['depends'])}")
+            lines.append("")
+            
+            # Dispatch command - ready to copy
+            dispatch = f'''```python
+assign_task("{agent_name}", """Task {task['number']}: {task['title']}
+
+GOAL: {goal}
+
+FILES:
+{files_str}
+
+REQUIREMENTS:
+{reqs_str}
+
+DONE_WHEN: {done_when}
+""")
+```'''
+            lines.append(dispatch)
             lines.append("")
         
-        agent = task.get("agent", "backend_dev")
-        agent_info = SWARM_AGENTS.get(agent, {"name": agent})
-        
-        # Task block with dispatch format
-        lines.extend([
-            f"#### Task {task['number']}: {task['title']}",
-            "",
-            f"**Status:** `{task['status']}`  ",
-            f"**Agent:** `{agent}` ({agent_info.get('name', agent)})  ",
-            f"**Priority:** {task.get('priority', 'medium')}  ",
-            f"**Depends:** {', '.join(task.get('depends', [])) or 'none'}  ",
-            "",
-            "**Dispatch Command:**",
-            "```",
-            f'assign_task("{agent_info.get("name", agent)}", "Task {task["number"]}: {task["title"]}',
-            "",
-            "GOAL: [from task description]",
-            "FILES: [from task content]",
-            "REQUIREMENTS:",
-            "- [from task content]",
-            "DONE: [acceptance criteria]"
-            '")',
-            "```",
-            "",
-            "<details>",
-            "<summary>Full Task Details</summary>",
-            "",
-            task.get("content", "No details available."),
-            "",
-            "</details>",
-            "",
-            "---",
-            "",
-        ])
+        lines.append("---")
+        lines.append("")
+    
+    # Add note about additional phases
+    if total_phases > max_phase:
+        lines.append("## 📄 Additional Phases")
+        lines.append(f"Phases 2-{total_phases} will be loaded after Phase 1 completes.")
+        lines.append("The Auto Orchestrator will trigger you to assign more tasks.")
+        lines.append("")
     
     return "\n".join(lines)
 

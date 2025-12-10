@@ -31,3 +31,6 @@ hypothesis>=6.0.0
 # Web Dashboard
 flask>=3.0.0
 flask-socketio>=5.3.0
+
+# Memory Profiling (for leak detection)
+psutil>=5.9.0

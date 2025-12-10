@@ -598,63 +598,186 @@ class AgentCard(Static):
             content.append("\nLatest:\n", style="bold white")
             items = self.accomplishments[-self._max_history:]
             for acc in items:
-                content.append(f"✓ {acc}\n", style="green")
+                content.append(f"[x] {acc}\n", style="green")
 
         self.update(Panel(content, title=title, border_style=border_style))
 
 
+def _sanitize_for_display(text: str) -> str:
+    """Remove problematic Unicode characters for Windows terminal compatibility."""
+    import re
+    # Replace common problematic characters
+    replacements = {
+        '█': '#', '░': '-', '▓': '=',
+        '─': '-', '│': '|', '┌': '+', '┐': '+', '└': '+', '┘': '+',
+        '├': '+', '┤': '+', '┬': '+', '┴': '+', '┼': '+',
+        '▶': '>', '▼': 'v', '◀': '<', '▲': '^',
+        '→': '->', '←': '<-', '↑': '^', '↓': 'v',
+        '✓': '[x]', '✗': '[!]', '✔': '[x]', '✘': '[!]',
+        '⏳': '[ ]', '🔄': '[~]', '✅': '[x]', '❌': '[!]', '📤': '[>]',
+    }
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+    # Remove other problematic emoji ranges
+    text = re.sub(r'[\U0001F300-\U0001F9FF]', '', text)  # Misc symbols
+    return text
+
+
 class DevPlanPanel(Static):
-    """Panel displaying the user-facing dashboard and project status."""
+    """Panel displaying real-time swarm progress with phases and tasks."""
+    
+    # Agent markers for task display
+    AGENT_EMOJI = {
+        "backend_dev": "[BE]",
+        "frontend_dev": "[FE]",
+        "qa_engineer": "[QA]",
+        "devops": "[DO]",
+        "tech_writer": "[TW]",
+    }
+    
+    STATUS_EMOJI = {
+        "pending": "[ ]",
+        "dispatched": "[>]",
+        "in_progress": "[~]",
+        "completed": "[x]",
+        "blocked": "[!]",
+    }
     
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.plan_content = "Loading..."
+        self._orchestrator = None
+        self._collapsed_phases = set()  # Track collapsed phases
+    
+    def set_orchestrator(self, orch):
+        """Set the orchestrator for real-time updates."""
+        self._orchestrator = orch
+    
+    def toggle_phase(self, phase_num: int):
+        """Toggle phase collapsed state."""
+        if phase_num in self._collapsed_phases:
+            self._collapsed_phases.discard(phase_num)
+        else:
+            self._collapsed_phases.add(phase_num)
+        self.refresh_plan()
     
     def refresh_plan(self):
-        """Load the user-facing dashboard from file."""
+        """Refresh the dashboard - prefer orchestrator data, fallback to files."""
         try:
-            # Prefer user-facing dashboard.md (cleaner, auto-generated)
-            dashboard_path = get_scratch_dir() / "shared" / "dashboard.md"
-            devplan_path = get_scratch_dir() / "shared" / "devplan.md"
-            plan_path = get_scratch_dir() / "shared" / "master_plan.md"
-            blockers_path = get_scratch_dir() / "shared" / "blockers.md"
-            
-            content_parts = []
-            
-            # Show user-facing dashboard first (if exists)
-            if dashboard_path.exists():
-                content = dashboard_path.read_text(encoding='utf-8')
-                content_parts.append(content)
-            elif devplan_path.exists():
-                # Fall back to devplan if no dashboard yet
-                content = devplan_path.read_text(encoding='utf-8')
-                content_parts.append(content)
-            elif plan_path.exists():
-                content = plan_path.read_text(encoding='utf-8')
-                content_parts.append(content)
+            # Try orchestrator first for real-time data
+            if self._orchestrator and self._orchestrator._initialized:
+                self.plan_content = self._render_from_orchestrator()
             else:
-                content_parts.append(
-                    "📋 No project dashboard yet.\n\n"
-                    "Start by telling the Architect what you want to build:\n"
-                    "  'Create a [description of your project]'\n\n"
-                    "The dashboard will appear here once work begins."
-                )
-            
-            # Show blockers if any exist
-            if blockers_path.exists():
-                blockers_content = blockers_path.read_text(encoding='utf-8')
-                if blockers_content.strip():
-                    content_parts.append("\n\n════════════════════════════════════════════════════════════\n")
-                    content_parts.append("⚠️ BLOCKERS (scratch/shared/blockers.md)\n")
-                    content_parts.append("════════════════════════════════════════════════════════════\n")
-                    content_parts.append(blockers_content)
-            
-            self.plan_content = "\n".join(content_parts)
-            
+                self.plan_content = self._render_from_files()
         except Exception as e:
             self.plan_content = f"Error loading dashboard: {e}"
         
         self.update(self.plan_content)
+    
+    def _render_from_orchestrator(self) -> str:
+        """Render real-time dashboard from orchestrator state."""
+        data = self._orchestrator.get_dashboard_data()
+        lines = []
+        
+        # Header
+        project_name = data.get('project_name', 'Project')
+        lines.append(f"[P] {project_name}")
+        lines.append("-" * 35)
+        
+        # Overall progress
+        phases = data.get('phases', [])
+        total_tasks = sum(p.get('total', 0) for p in phases)
+        completed_tasks = sum(p.get('completed', 0) for p in phases)
+        pct = int(100 * completed_tasks / total_tasks) if total_tasks else 0
+        
+        bar_width = 20
+        filled = int(bar_width * pct / 100)
+        bar = "#" * filled + "-" * (bar_width - filled)
+        
+        lines.append(f"Progress: [{bar}] {pct}%")
+        lines.append(f"Tasks: {completed_tasks}/{total_tasks}")
+        lines.append("")
+        
+        # Phases with tasks
+        for phase_data in phases:
+            phase_num = phase_data.get('number', 0)
+            state = phase_data.get('state', 'not_started')
+            is_collapsed = phase_num in self._collapsed_phases
+            
+            # Phase state indicator
+            if state == 'completed':
+                state_emoji = "[DONE]"
+            elif state == 'in_progress':
+                state_emoji = "[....]"
+            else:
+                state_emoji = "[    ]"
+            
+            # Phase header
+            total = phase_data.get('total', 0)
+            completed = phase_data.get('completed', 0)
+            phase_pct = phase_data.get('progress_pct', 0)
+            collapse_icon = ">" if is_collapsed else "v"
+            
+            phase_title = phase_data.get('title', '')[:40]  # Longer titles
+            lines.append(f"{collapse_icon} {state_emoji} Phase {phase_num}: {phase_title}")
+            lines.append(f"   [{completed}/{total}] {phase_pct}%")
+            
+            # Tasks (if not collapsed and phase is active)
+            if not is_collapsed and (state == 'in_progress' or total <= 8):
+                for task in phase_data.get('tasks', [])[:15]:
+                    task_state = task.get('state', 'pending')
+                    status_emoji = self.STATUS_EMOJI.get(task_state, "[?]")
+                    agent_emoji = task.get('emoji', '[A]')
+                    
+                    task_id = task.get('id', '?')
+                    title = task.get('title', 'Unknown')[:50]  # Longer task titles
+                    
+                    # Highlight in-progress tasks
+                    if task_state in ('dispatched', 'in_progress'):
+                        agent_name = task.get('agent_name', '')
+                        lines.append(f"   {status_emoji}{agent_emoji} {task_id}: {title}")
+                        if agent_name:
+                            lines.append(f"      -> {agent_name}")
+                    else:
+                        lines.append(f"   {status_emoji}{agent_emoji} {task_id}: {title}")
+            
+            lines.append("")
+        
+        return "\n".join(lines)
+    
+    def _render_from_files(self) -> str:
+        """Fallback: render from markdown files."""
+        dashboard_path = get_scratch_dir() / "shared" / "dashboard.md"
+        devplan_path = get_scratch_dir() / "shared" / "devplan.md"
+        task_queue_path = get_scratch_dir() / "shared" / "task_queue.md"
+        plan_path = get_scratch_dir() / "shared" / "master_plan.md"
+        
+        # Prefer task_queue.md for task-level visibility
+        if task_queue_path.exists():
+            content = task_queue_path.read_text(encoding='utf-8')
+            # Truncate if too long
+            if len(content) > 3000:
+                content = content[:3000] + "\n\n... (truncated)"
+            return _sanitize_for_display(content)
+        
+        if dashboard_path.exists():
+            return _sanitize_for_display(dashboard_path.read_text(encoding='utf-8'))
+        
+        if devplan_path.exists():
+            content = devplan_path.read_text(encoding='utf-8')
+            if len(content) > 3000:
+                content = content[:3000] + "\n\n... (truncated)"
+            return _sanitize_for_display(content)
+        
+        if plan_path.exists():
+            return _sanitize_for_display(plan_path.read_text(encoding='utf-8'))
+        
+        return (
+            "No project dashboard yet.\n\n"
+            "Start by telling the Architect what you want to build:\n"
+            "  'Create a [description of your project]'\n\n"
+            "The dashboard will appear here once work begins."
+        )
 
 
 class ToolCallsLog(RichLog):
@@ -820,17 +943,22 @@ class ApiLogEntry(Static):
                 if len(tool_names) > 8:
                     lines.append(f"         {', '.join(tool_names[8:])}")
             
-            # Show messages (full content in detailed view)
+            # Show messages (TRUNCATED to save space)
             messages = self.request_data.get("messages", [])
             lines.append("")
             lines.append(f"  Messages ({len(messages)}):")
             for i, msg in enumerate(messages):
                 role = msg.get("role", "?")
                 content = msg.get("content") or ""
+                # Truncate long content
+                if len(content) > 200:
+                    content = content[:200] + f"... [{len(content)} chars total]"
                 lines.append(f"  ┌─[{i+1}] {role.upper()}")
-                content_lines = content.split('\n')
+                content_lines = content.split('\n')[:5]  # Max 5 lines
                 for cl in content_lines:
-                    lines.append(f"  │ {cl}")
+                    lines.append(f"  │ {cl[:100]}")  # Max 100 chars per line
+                if len(content.split('\n')) > 5:
+                    lines.append(f"  │ ... ({len(content.split(chr(10)))} lines total)")
                 lines.append("  └─────")
             
             if self.has_response:
@@ -849,16 +977,19 @@ class ApiLogEntry(Static):
                     lines.append("")
                     lines.append("  Content:")
                     lines.append("  ┌─────")
-                    response_lines = full_response.split('\n')
+                    # Truncate response
+                    response_lines = full_response.split('\n')[:10]  # Max 10 lines
                     for rl in response_lines:
-                        lines.append(f"  │ {rl}")
+                        lines.append(f"  │ {rl[:100]}")  # Max 100 chars
+                    if len(full_response.split('\n')) > 10:
+                        lines.append(f"  │ ... ({len(full_response)} chars total)")
                     lines.append("  └─────")
                 
                 tool_calls = self.response_data.get("tool_calls", [])
                 if tool_calls:
                     lines.append("")
                     lines.append(f"  Tool Calls ({len(tool_calls)}):")
-                    for tc in tool_calls:
+                    for tc in tool_calls[:5]:  # Max 5 tool calls shown
                         func = tc.get("function", {})
                         name = func.get("name", "?")
                         args = func.get("arguments", "")
@@ -866,12 +997,16 @@ class ApiLogEntry(Static):
                         try:
                             import json
                             args_dict = json.loads(args) if args else {}
-                            for k, v in args_dict.items():
-                                v_str = str(v)
+                            for k, v in list(args_dict.items())[:3]:  # Max 3 args
+                                v_str = str(v)[:100]  # Truncate values
                                 lines.append(f"  │   {k}: {v_str}")
+                            if len(args_dict) > 3:
+                                lines.append(f"  │   ... +{len(args_dict) - 3} more args")
                         except:
-                            lines.append(f"  │   {args}")
+                            lines.append(f"  │   {args[:100]}")
                         lines.append("  └─────")
+                    if len(tool_calls) > 5:
+                        lines.append(f"  ... +{len(tool_calls) - 5} more tool calls")
             
             lines.append("═════════════════")
         
@@ -1262,6 +1397,14 @@ class SwarmDashboard(App):
         
         # Set up API logging callback
         set_api_log_callback(self.on_api_call)
+        
+        # Start memory profiler to debug memory leaks
+        try:
+            from core.memory_profiler import start_memory_monitor
+            start_memory_monitor(interval=15.0)  # Log every 15 seconds
+            logger.info("Memory profiler started - check logs/memory_*.log")
+        except Exception as e:
+            logger.warning(f"Could not start memory profiler: {e}")
 
         self.query_one("#chat-input", Input).focus()
         await self.init_chatroom()
@@ -1311,6 +1454,22 @@ class SwarmDashboard(App):
         except Exception as e:
             self.chat_log.write(Text(f"⚠️ Traffic Control relay failed: {e}", style="yellow"))
             self.traffic_relay = None
+        
+        # Initialize orchestrator for real-time task tracking (devussy mode)
+        self.orchestrator = None
+        if self.devussy_mode:
+            try:
+                from core.swarm_orchestrator import SwarmOrchestrator, set_orchestrator
+                self.orchestrator = SwarmOrchestrator(Path(self.project.root))
+                if await self.orchestrator.initialize():
+                    set_orchestrator(self.orchestrator)  # Make globally accessible
+                    self.devplan_panel.set_orchestrator(self.orchestrator)
+                    self.chat_log.write(Text("📊 Orchestrator initialized - real-time task tracking enabled", style="cyan"))
+                else:
+                    self.orchestrator = None
+            except Exception as e:
+                logger.warning(f"Orchestrator init failed: {e}")
+                self.orchestrator = None
 
         # Create agent card
         self.create_agent_card(architect)
@@ -1346,8 +1505,11 @@ class SwarmDashboard(App):
         """Show a summary of the devplan in chat and recover if needed."""
         try:
             from core.devussy_integration import (
-                load_devplan_for_swarm, SWARM_AGENTS, 
-                recover_project_state, regenerate_task_queue_from_devplan
+                load_devplan_for_swarm,
+                SWARM_AGENTS,
+                recover_project_state,
+                regenerate_task_queue_from_devplan,
+                generate_swarm_task_queue,
             )
             
             project_root = Path(self.project.root)
@@ -1371,33 +1533,72 @@ class SwarmDashboard(App):
                     current = state.get("current_phase", 1)
                     self.chat_log.write(Text(f"   📊 Progress: {completed}/{total} tasks, currently on Phase {current}", style="dim"))
                 
-                # Check for task queue - regenerate if empty/corrupted
+                # Check for task queue
                 task_queue_file = project_root / "scratch" / "shared" / "task_queue.md"
                 needs_recovery = False
-                
+                regen_from_phases = False
+
+                queue_content = ""
                 if task_queue_file.exists():
                     queue_content = task_queue_file.read_text(encoding="utf-8")
-                    # Check if task queue is essentially empty
-                    if len(queue_content) < 200 or "## Task Queue" not in queue_content:
-                        needs_recovery = True
-                else:
-                    needs_recovery = True
-                
-                # Check if phase files are corrupted (no proper task format)
+
+                # Determine if phase files look valid (new or old formats)
                 phase_files = devplan_data.get("phase_files", [])
+                has_valid_tasks = False
                 if phase_files:
-                    has_valid_tasks = False
                     for pf in phase_files:
                         content = pf.get("content", "")
-                        if "@agent:" in content or "### Task" in content or "## Task" in content:
+                        if (
+                            "@agent:" in content
+                            or "### Task" in content
+                            or "## Task" in content
+                            or "- [ ] 1.1:" in content
+                            or "PHASE_TASKS_START" in content and "TASK_1_1_START" in content
+                        ):
                             has_valid_tasks = True
                             break
-                    if not has_valid_tasks:
+
+                # Decide how to handle the current task_queue
+                if not queue_content:
+                    # No queue yet
+                    if has_valid_tasks:
+                        regen_from_phases = True
+                    else:
                         needs_recovery = True
-                        self.chat_log.write(Text("   ⚠️ Phase files missing task details", style="yellow"))
-                
+                else:
+                    # We have some queue content; check if it's the rich swarm format
+                    has_rich_markers = any(
+                        marker in queue_content
+                        for marker in [
+                            "# 🚀 Swarm Task Queue",
+                            "## Agent Summary",
+                            "## Phase 1",
+                            "## Task Queue",  # legacy format
+                        ]
+                    )
+
+                    if not has_rich_markers and has_valid_tasks:
+                        # We have good phase tasks but only a minimal/recovery queue
+                        regen_from_phases = True
+                    elif not has_rich_markers:
+                        needs_recovery = True
+
+                # Prefer generating a rich swarm task queue from phase files
+                if regen_from_phases:
+                    self.chat_log.write(Text("   🔧 Generating swarm task queue from phase files...", style="yellow"))
+                    try:
+                        generate_swarm_task_queue(project_root)
+                        self.chat_log.write(Text("   ✅ Swarm task queue generated from phases", style="green"))
+                        task_queue_file = project_root / "scratch" / "shared" / "task_queue.md"
+                        queue_content = task_queue_file.read_text(encoding="utf-8") if task_queue_file.exists() else ""
+                        needs_recovery = False
+                    except Exception as e:
+                        self.chat_log.write(Text(f"   ❌ Failed to generate swarm task queue: {e}", style="red"))
+                        needs_recovery = True
+
+                # Fallback: regenerate a minimal recovery queue from devplan table
                 if needs_recovery:
-                    self.chat_log.write(Text("   🔧 Regenerating task queue...", style="yellow"))
+                    self.chat_log.write(Text("   🔧 Regenerating minimal task queue from devplan...", style="yellow"))
                     if regenerate_task_queue_from_devplan(project_root):
                         self.chat_log.write(Text("   ✅ Task queue recovered from devplan", style="green"))
                     else:
@@ -1511,6 +1712,7 @@ class SwarmDashboard(App):
                             break
 
                 if request_id in self.api_inflight_entries:
+                    # Remove the inflight entry
                     try:
                         entry.remove()
                     except Exception:
@@ -1523,10 +1725,19 @@ class SwarmDashboard(App):
                     except Exception:
                         pass
                     
+                    # Create a NEW entry for history (can't remount removed widget in Textual)
                     try:
-                        self.api_log_history.mount(entry)
-                    except Exception:
-                        pass
+                        history_entry = ApiLogEntry(request_id)
+                        history_entry.request_data = entry.request_data
+                        history_entry.response_data = entry.response_data
+                        history_entry.has_response = True
+                        history_entry.set_response(timestamp, agent_name, data)
+                        self.api_log_history.mount(history_entry)
+                        # Update the reference in api_log_entries to point to new widget
+                        self.api_log_entries[request_id] = history_entry
+                    except Exception as e:
+                        import logging
+                        logging.getLogger(__name__).debug(f"Failed to mount API history entry: {e}")
                     self.api_inflight_entries.pop(request_id, None)
                     
                     # Restore inflight empty if no more inflight
@@ -1560,6 +1771,7 @@ class SwarmDashboard(App):
                 entry.set_response(timestamp, agent_name, error_data)
 
                 if request_id in self.api_inflight_entries:
+                    # Remove the inflight entry
                     try:
                         entry.remove()
                     except Exception:
@@ -1572,10 +1784,19 @@ class SwarmDashboard(App):
                     except Exception:
                         pass
                     
+                    # Create a NEW entry for history (can't remount removed widget in Textual)
                     try:
-                        self.api_log_history.mount(entry)
-                    except Exception:
-                        pass
+                        history_entry = ApiLogEntry(request_id)
+                        history_entry.request_data = entry.request_data
+                        history_entry.response_data = entry.response_data
+                        history_entry.has_response = True
+                        history_entry.set_response(timestamp, agent_name, error_data)
+                        self.api_log_history.mount(history_entry)
+                        # Update the reference in api_log_entries to point to new widget
+                        self.api_log_entries[request_id] = history_entry
+                    except Exception as e:
+                        import logging
+                        logging.getLogger(__name__).debug(f"Failed to mount API history error entry: {e}")
                     self.api_inflight_entries.pop(request_id, None)
                     
                     # Restore inflight empty if no more inflight
@@ -1714,9 +1935,14 @@ class SwarmDashboard(App):
         if not settings.get("auto_chat", True):
             return
 
-        # Don't overlap with an in-flight round
+        # Don't overlap with an in-flight round - use an atomic guard
         if self.is_processing or not self.chatroom:
             return
+        
+        # Additional guard: check if we're already in a tick to prevent race conditions
+        if getattr(self, '_tick_in_progress', False):
+            return
+        self._tick_in_progress = True
 
         try:
             from core.task_manager import get_task_manager
@@ -1766,6 +1992,7 @@ class SwarmDashboard(App):
             self._idle_ticks_after_complete = 0
 
         if not should_run:
+            self._tick_in_progress = False
             return
 
         # Kick off another conversation round; @work(exclusive=True) prevents
@@ -1775,6 +2002,7 @@ class SwarmDashboard(App):
         # Note: auto_orchestrator_pending is cleared in run_conversation after
         # the round completes successfully, not here (prevents losing the flag
         # if something goes wrong)
+        # The _tick_in_progress flag is cleared in run_conversation's finally block
 
         self.run_conversation()
     
@@ -1828,10 +2056,54 @@ class SwarmDashboard(App):
             await self.send_message(line)
 
     async def send_message(self, content: str):
+        # Check for "go" command - use AutoDispatcher instead of LLM
+        if content.strip().lower() == "go":
+            await self._handle_go_command()
+            return
+        
         # Don't write here - on_chat_message callback handles display
         await self.chatroom.add_human_message(content=content, username=self.username, user_id="dashboard_user")
         self.is_processing = True
         self.run_conversation()
+    
+    async def _handle_go_command(self):
+        """Handle 'go' command using local AutoDispatcher instead of LLM."""
+        from core.auto_dispatcher import get_auto_dispatcher
+        from rich.text import Text
+        
+        self.chat_log.write(Text("🚀 AutoDispatcher: Starting task dispatch (no LLM needed)...", style="cyan bold"))
+        
+        try:
+            dispatcher = get_auto_dispatcher()
+            
+            # Set status callback for UI updates
+            async def status_callback(msg: str):
+                self.chat_log.write(Text(f"  {msg}", style="cyan"))
+            
+            dispatcher.set_status_callback(status_callback)
+            
+            # Dispatch the next task
+            dispatched = await dispatcher.dispatch_next_task()
+            
+            if dispatched:
+                self.chat_log.write(Text("✅ Task dispatched! Worker will start automatically.", style="green"))
+                # Trigger conversation round for the worker
+                self.is_processing = True
+                self.run_conversation()
+            else:
+                self.chat_log.write(Text("ℹ️ No tasks to dispatch right now.", style="yellow"))
+            
+            self.refresh_panels()
+            
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"AutoDispatcher error: {e}")
+            self.chat_log.write(Text(f"❌ AutoDispatcher error: {e}", style="red"))
+            # Fall back to sending to Architect
+            self.chat_log.write(Text("Falling back to Architect...", style="yellow"))
+            await self.chatroom.add_human_message(content="go", username=self.username, user_id="dashboard_user")
+            self.is_processing = True
+            self.run_conversation()
 
     @work(exclusive=True)
     async def run_conversation(self):
@@ -1864,6 +2136,7 @@ class SwarmDashboard(App):
             logger.error(f"[run_conversation] Error: {e}")
         finally:
             self.is_processing = False
+            self._tick_in_progress = False  # Clear tick guard to allow next tick
             self.refresh_panels()
 
     async def handle_command(self, line: str):
@@ -1890,6 +2163,7 @@ class SwarmDashboard(App):
             self.chat_log.write(Text("  /fix <reason> - Stop & request fix", style="dim"))
             self.chat_log.write(Text("  /snapshot - Snapshot current project folder", style="dim"))
             self.chat_log.write(Text("  /api      - View or change API provider", style="dim"))
+            self.chat_log.write(Text("  /memdump  - Debug memory usage (leak detection)", style="dim"))
             self.chat_log.write(Text("─" * 50, style="dim"))
             self.chat_log.write(Text(f"Roles: {', '.join(AGENT_CLASSES.keys())}", style="dim"))
         elif cmd == "/settings":
@@ -1926,6 +2200,24 @@ class SwarmDashboard(App):
             tracker = get_token_tracker()
             stats = tracker.get_stats()
             self.chat_log.write(Text(f"Agents: {len(status['active_agents'])} | Msgs: {status['message_count']} | Tokens: {stats['total_tokens']:,}", style="cyan"))
+        elif cmd == "/memdump":
+            # Immediate memory dump for debugging leaks
+            try:
+                from core.memory_profiler import dump_memory_report, get_memory_mb
+                self.chat_log.write(Text(f"🧠 Memory: {get_memory_mb():.1f} MB - generating full dump...", style="yellow"))
+                report = dump_memory_report()
+                # Write to log file
+                from pathlib import Path
+                log_path = Path("logs") / f"memdump_{datetime.now().strftime('%H%M%S')}.log"
+                log_path.parent.mkdir(exist_ok=True)
+                log_path.write_text(report, encoding='utf-8')
+                self.chat_log.write(Text(f"📝 Memory dump saved to {log_path}", style="green"))
+                # Show summary in chat
+                for line in report.split('\n')[:20]:
+                    self.chat_log.write(Text(line, style="dim"))
+                self.chat_log.write(Text("... (see full dump in log file)", style="dim"))
+            except Exception as e:
+                self.chat_log.write(Text(f"Error: {e}", style="red"))
         elif cmd == "/spawn":
             if arg and arg in AGENT_CLASSES:
                 settings = get_settings()
