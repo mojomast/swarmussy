@@ -27,7 +27,7 @@ A multi-agent AI development system where specialized AI agents collaborate to b
 - **Pluggable API Providers** - Use Requesty (default), Z.AI, OpenAI, or a custom endpoint, and optionally spoof the tool identifier (e.g. Claude Code, Cursor, Windsurf) via the Settings → API tab
 - **Git-Aware Local Workflow** - Agents can inspect `git status`/`git diff` for the active project's `scratch/shared` workspace; Checky McManager and Deployo McOps can run a safe, local `git_commit` (no pushes) after review
 - **Skeptical QA Gate for Commits** - Bugsy McTester reviews changes and tests, emitting `QA DECISION: APPROVED` / `REQUEST_CHANGES`; Checky only commits when QA has approved the scope
-- **Singleton Workers per Role** - Architect reuses a single Codey/Pixel/Bugsy/Deployo/Checky/Docy per project to avoid multiple workers trampling the same files
+- **Worker Concurrency Control** - At most two workers per core role (Codey/Pixel/Bugsy/Deployo/Docy) per project; Architect/AutoDispatcher reuse idle workers and only spawn a second worker when all existing workers of that role are busy, with strict singleton behavior for the Project Manager.
 
 ## Agent Roster
 
@@ -301,11 +301,12 @@ Logs are saved under `logs/` (e.g. `dashboard_YYYYMMDD_HHMMSS.log` for the legac
 - Requesty API key (get one at https://requesty.ai)
 - Rich library for terminal UI
 
-## Devussy DevPlan Mode & AutoDispatcher (Dec 2025)
+## Devussy DevPlan Mode, Phase 0 & AutoDispatcher (Dec 2025)
 
 For large projects, you can let **Devussy** generate a full devplan and task queue, then let the swarm execute it with minimal token overhead:
 
 - Devussy writes per-project artifacts under `projects/<name>/scratch/shared/`:
+  - `project_design.md` – canonical design (tech stack, layout, constraints)
   - `devplan.md` – phase/task breakdown with `@agent:` tags and anchors
   - `phases/phaseN.md` – detailed phase task files
   - `task_queue.md` – copy‑paste‑ready `assign_task()` commands per task
@@ -313,6 +314,12 @@ For large projects, you can let **Devussy** generate a full devplan and task que
   - All tasks and phases (with agent roles, goal, requirements, done‑when)
   - Dispatch commands for each task
   - Live dashboard data for the TUI
+- **Phase 0 project bootstrap** (`core/project_bootstrap.py`) runs once before the first dispatch:
+  - Creates a Python **.venv at the project root** (outside `scratch/shared/`)
+  - Ensures `scratch/shared/requirements.txt` exists and **always includes `pytest`**
+  - Installs Python deps from `scratch/shared/requirements.txt` into the venv
+  - If `scratch/shared/package.json` exists, runs `npm install` in `scratch/shared/`
+  - Creates `src/`, `tests/`, `docs/`, `config/` (and basic frontend dirs for React/Web projects)
 - `core/auto_dispatcher.py` replaces the Architect for **dispatching**:
   - `go` in the TUI/CLI calls the AutoDispatcher, not the Architect LLM
   - **Parallel dispatch**: Up to 3 tasks dispatched at once (`MAX_PARALLEL_TASKS`)
@@ -325,7 +332,17 @@ For large projects, you can let **Devussy** generate a full devplan and task que
   - Project Manager disabled in devussy mode (AutoDispatcher handles coordination)
   - File read caching (mtime-based) avoids re-reading unchanged files
   - Project structure caching (60s TTL) reduces redundant tree scans
-  - Worker prompts emphasize `read_multiple_files` for batch operations
+  - `get_project_structure` returns a **filtered, capped tree view**:
+    - Skips heavy/irrelevant dirs: `.venv`, `node_modules`, `.git`, `__pycache__`, IDE caches, build outputs
+    - Caps output at ~150 lines and annotates which dirs were excluded
+    - Intended to show project **shape**, not vendor dependencies
+  - Worker prompts emphasize `read_multiple_files` for batch operations (max **10 files per call**, with clear error messaging to split larger batches)
+  - Lean worker prompts treat `project_design.md` as **source of truth** for tech stack and layout (no freelancing from Flask→FastAPI or React+Vite→Webpack unless the design or user explicitly says so)
+  - AutoDispatcher now avoids scheduling new work for already-busy roles, and can spawn a second worker per role (up to 2) only when the first is busy, respecting file-ownership constraints.
+  - A watchdog timer prevents stalls by periodically re-checking for idle workers and dispatchable tasks.
+  - Status messages like "⏳ X is thinking" and "⚡ N worker(s) processing" are throttled to keep CLI/TUI output readable.
+  - When any single API call exceeds ~80k **prompt tokens** for a given task, the worker automatically performs a **context reset**: old history is trimmed and a concise task reminder is injected so future calls stay under the ~80k threshold.
+  - On Windows, worker prompts and tools are OS‑aware: Devussy devplans include a `Windows` environment section, and `run_command` transparently rewrites common Unix commands (`ls`, `pwd`, `cat`, `rm`, etc.) into their PowerShell/CMD equivalents (`dir`, `cd`, `type`, `del`, ...).
 
 The right‑sidebar **API History** panel is now token‑aware:
 

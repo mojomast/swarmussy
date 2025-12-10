@@ -488,8 +488,10 @@ Added verbose API request/response logging in the TUI:
 - **Problem**: Workers could accumulate extremely large per-call contexts (80k–100k+ tokens) and keep dragging them forward, bloating token usage.
 - **Solution** (`agents/base_agent.py::_call_api`):
   - After each API response, we read `usage.prompt_tokens` for that call.
-  - If a single call for the current `task_id` crosses a `CONTEXT_HANDOFF_THRESHOLD` of ~80,000 prompt tokens and we haven't already done so for that task, the agent sends a one-time "Auto Orchestrator" message asking Bossy/Checky to hand off the work to a fresh worker with a concise summary.
-  - This keeps future calls for that task under ~80k tokens of context.
+  - If a single call for the current `task_id` crosses a `CONTEXT_HANDOFF_THRESHOLD` of ~80,000 prompt tokens and we haven't already done so for that task, the agent performs a **one-time context reset** for that task.
+  - The reset trims the agent's short‑term memory down to the most recent couple of messages and sets a `_context_reset_msg_index` so future API calls only see messages **after** the reset point.
+  - The agent injects a concise, human‑role "Auto Orchestrator" message summarizing the current task so it can continue from a fresh context without losing the assignment.
+  - This keeps future calls for that task under ~80k tokens of context while preserving enough task information to continue work.
 
 ### 3. Token Tracker Semantics & Checky McManager
 
@@ -1698,11 +1700,17 @@ Key improvements:
 
 **New File:** `core/project_bootstrap.py`
 
-Runs automatically after devussy pipeline:
-- **Python:** Creates `.venv`, installs `requirements.txt`
-- **Node:** Runs `npm install` if `package.json` exists
-- **Structure:** Creates `src/`, `tests/`, `docs/`, `config/` directories
-- **Git:** Creates `.gitignore` with standard ignores
+Runs automatically after the Devussy pipeline as "Phase 0" before any swarm tasks:
+- **Python:**
+  - Creates a `.venv` at the **project root** (outside `scratch/shared/`) so agents don't see it when exploring `shared/`
+  - Ensures `scratch/shared/requirements.txt` exists and **always includes `pytest`** (appends it without overwriting other deps)
+  - Installs Python dependencies from `scratch/shared/requirements.txt` into the project venv
+- **Node:**
+  - If `scratch/shared/package.json` exists, runs `npm install` with `cwd` set to `scratch/shared/`
+- **Structure:**
+  - Creates `src/`, `tests/`, `docs/`, `config/` under `scratch/shared/`
+  - For web stacks, also creates basic frontend dirs (e.g. `src/components`, `src/lib`, `public`)
+- **Git:** Creates `.gitignore` in `scratch/shared/` with standard Python/Node/IDE/test ignores.
 
 **Integration:** Called from `run_devussy_pipeline_sync()` with `run_bootstrap=True` (default).
 
@@ -1921,3 +1929,78 @@ copy_artifacts_to_new_project(
 
 *Last updated: December 9, 2025 (late evening)*
 *Status: Pipeline resume, artifact import, and stage selection all functional*
+
+---
+
+## Latest Updates (December 9, 2025 - Swarm Orchestration, OS Awareness & Logging)
+
+### 1. AutoDispatcher Busy-Role Filtering & Multi-Worker Roles
+
+- **Files:** `core/auto_dispatcher.py`, `core/chatroom.py`, `core/swarm_orchestrator.py`, `core/file_ownership.py`
+- AutoDispatcher now:
+  - Tracks which roles are currently busy and **avoids dispatching** new work to those roles until they free up.
+  - Uses `SwarmTask.batch_key` and file-ownership information to respect parallel‑safe vs conflicting work.
+  - Can dispatch work to **up to two workers per core role** (backend, frontend, QA, DevOps, Tech Writer) when the first worker is busy and there is non‑colliding work available.
+- `Chatroom.spawn_agent` was updated so:
+  - `project_manager` remains a **strict singleton**.
+  - Worker roles are reused when idle; a second worker is only spawned when **all existing workers of that role are `working`**, and never more than 2 per role.
+
+### 2. Watchdog to Prevent Stalls
+
+- **File:** `core/auto_dispatcher.py`
+- Added a lightweight **watchdog**:
+  - When there are no immediately dispatchable tasks but some workers are still busy, AutoDispatcher schedules a delayed `_watchdog_check`.
+  - After a short delay, the watchdog re‑examines orchestrator state and the chatroom for newly idle workers and dispatchable tasks.
+  - This prevents the swarm from stalling if a completion event is missed or if the conversation loop goes quiet while work is still possible.
+
+### 3. Context Handoff Auto-Reset Implementation
+
+- **File:** `agents/base_agent.py`
+- The earlier "Context Handoff Guard" semantics were refined:
+  - When a single API call exceeds ~80k **prompt tokens** for a given `task_id`, the agent:
+    - Records the task in `_context_handoff_task_id` to ensure the reset is **one-time per task**.
+    - Trims `_short_term_memory` down to the most recent couple of messages.
+    - Sets `_context_reset_msg_index` so `_prepare_messages` only includes global history **after** the reset point.
+    - Injects a short human‑role message from "Auto Orchestrator" summarizing the current task and instructing the worker to continue and call `complete_my_task()` when done.
+  - Effect: future calls for that task stay under the ~80k threshold while preserving a minimal but sufficient task reminder.
+
+### 4. OS-Aware Commands & Devussy Environment Awareness
+
+- **Files:** `agents/lean_prompts.py`, `core/agent_tools.py`, `devussy/templates/detailed_devplan_swarm.jinja`, `devussy/src/pipeline/detailed_devplan.py`
+- The system is now **OS-aware**:
+  - `agents/lean_prompts.py` detects `os.name` and appends an `OS_COMMAND_GUIDANCE` section to all worker prompts:
+    - On Windows (`os.name == "nt"`), workers are explicitly told to use `dir` instead of `ls`, `type` instead of `cat`, `cd`/`echo %cd%` instead of `pwd`, `findstr` instead of `grep`, etc.
+    - On Unix-like systems, prompts confirm that standard `ls`, `cat`, `pwd`, `grep`, etc. are available.
+  - `core/agent_tools.py::_run_command` auto‑converts common Unix commands to Windows equivalents when running on Windows:
+    - `ls` / `ls -la` → `dir`
+    - `pwd` → `cd`
+    - `cat` → `type`
+    - `rm` → `del`, `rm -rf` → `rmdir /s /q`
+    - `cp` → `copy`, `mv` → `move`, `touch` → `type nul > ...`, etc.
+  - Devussy's `detailed_devplan_swarm.jinja` template now includes a **Development Environment** section that:
+    - States `Platform: Windows` and gives Windows‑appropriate commands when `os_type == 'windows'`.
+    - Falls back to Unix guidance when running on non‑Windows hosts.
+  - `devussy/src/pipeline/detailed_devplan.py` passes `os_type` into the template context based on `os.name`.
+
+### 5. pytest + venv Integration for Workers
+
+- **Files:** `core/project_bootstrap.py`, `core/agent_tools.py`
+- `ProjectBootstrap` already ensured that:
+  - A project‑root `.venv` is created.
+  - `scratch/shared/requirements.txt` exists and **includes `pytest`**.
+  - Requirements are installed into the venv.
+- `AgentToolExecutor._run_command` now:
+  - Detects if a venv exists at the project root or within the agent workspace.
+  - Adds the venv's `Scripts/` (Windows) or `bin/` (Unix) directory to `PATH` and sets `VIRTUAL_ENV` before running Python‑related commands.
+  - Rewrites `pytest ...` and `pip ...` commands into `"<venv_python>" -m pytest ...` / `"<venv_python>" -m pip ...` when a venv Python executable is found, fixing `pytest not recognized` issues on Windows.
+
+### 6. Log Noise Throttling for Status Messages
+
+- **File:** `core/chatroom.py`
+- Added simple per‑key throttling for status broadcasts:
+  - `Chatroom` now tracks `_last_status_time` per `throttle_key` and a `_status_throttle_seconds` window (default ~8 seconds).
+  - High‑frequency status messages such as `"⏳ {agent} is thinking..."`, `"⏳ {worker} is working on task..."`, and `"⚡ N worker(s) processing tasks..."` now use throttled `throttle_key`s.
+  - Result: CLI/TUI logs remain informative without spamming repetitive status lines every round.
+
+*Last updated: December 9, 2025 (late night)*
+*Status: AutoDispatcher refined (busy-role filtering, multi-worker roles, watchdog), context handoff auto-reset online, OS-aware commands and pytest/venv integration active, status logging noise reduced*

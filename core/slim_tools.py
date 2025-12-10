@@ -47,11 +47,11 @@ SLIM_TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "read_multiple_files",
-            "description": "Batch-read up to 10 files. More efficient than multiple read_file calls.",
+            "description": "Batch-read up to 10 files. Split larger lists into multiple calls of ≤10.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "paths": {"type": "array", "items": {"type": "string"}}
+                    "paths": {"type": "array", "items": {"type": "string"}, "maxItems": 10}
                 },
                 "required": ["paths"]
             }
@@ -151,7 +151,7 @@ SLIM_TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "get_project_structure",
-            "description": "Get file tree view.",
+            "description": "Get file tree. Excludes .venv/node_modules/.git. Capped at 150 lines.",
             "parameters": {
                 "type": "object",
                 "properties": {

@@ -50,6 +50,7 @@ class AutoDispatcher:
         self._dispatch_cooldown_seconds = 1.0  # Reduced from 2.0 for faster chaining
         self._on_status_callback: Optional[Callable[[str], Awaitable[None]]] = None
         self._enable_batching = True  # Batch trivial/simple tasks together
+        self._watchdog_scheduled = False  # Prevent multiple watchdog tasks
         
     def set_status_callback(self, callback: Callable[[str], Awaitable[None]]):
         """Set callback for status messages."""
@@ -63,6 +64,62 @@ class AutoDispatcher:
                 await self._on_status_callback(f"🤖 AutoDispatch: {message}")
             except Exception:
                 pass
+    
+    async def _watchdog_check(self, delay_seconds: float = 10):
+        """
+        Watchdog that checks for dispatchable work after a delay.
+        
+        This prevents stalls when:
+        - All remaining tasks are for busy agents
+        - An agent finishes but there was no task completion event
+        - The conversation loop stops for any reason
+        """
+        if self._watchdog_scheduled:
+            return  # Already have a watchdog running
+        
+        self._watchdog_scheduled = True
+        try:
+            await asyncio.sleep(delay_seconds)
+            
+            if not self._enabled:
+                return
+            
+            from core.swarm_orchestrator import get_orchestrator
+            from core.chatroom import get_chatroom
+            
+            orchestrator = get_orchestrator()
+            chatroom = await get_chatroom()
+            
+            if not orchestrator or not orchestrator._initialized:
+                return
+            
+            # Check if there's work to do
+            summary = orchestrator.get_state_summary()
+            if summary["completed_tasks"] == summary["total_tasks"]:
+                return  # All done
+            
+            # Check if any agents are now idle
+            idle_agents = []
+            if chatroom:
+                for agent in chatroom._agents.values():
+                    if agent.status.value != "working":
+                        role = getattr(agent, "role", "unknown")
+                        if role in ("backend_dev", "frontend_dev", "qa_engineer", "devops", "tech_writer"):
+                            idle_agents.append(agent)
+            
+            if idle_agents:
+                # There are idle workers - try to dispatch
+                logger.info(f"[AutoDispatcher] Watchdog: {len(idle_agents)} idle agents, attempting dispatch")
+                await self.dispatch_next_task()
+            else:
+                # All workers still busy - schedule another check
+                logger.debug("[AutoDispatcher] Watchdog: All workers still busy, will check again")
+                self._watchdog_scheduled = False  # Allow new watchdog
+                asyncio.create_task(self._watchdog_check(delay_seconds=15))
+        except Exception as e:
+            logger.warning(f"[AutoDispatcher] Watchdog error: {e}")
+        finally:
+            self._watchdog_scheduled = False
     
     async def on_task_completed(self, task_id: str, agent_name: str) -> bool:
         """
@@ -99,13 +156,18 @@ class AutoDispatcher:
             if chatroom:
                 for agent in chatroom._agents.values():
                     if agent.status.value == "working":
-                        busy_roles.add(getattr(agent, 'role', 'unknown'))
+                        busy_roles.add(getattr(agent, "role", "unknown"))
             
             # Calculate how many agent slots are free
             free_slots = max(1, self.MAX_PARALLEL_AGENTS - len(busy_roles))
             
-            # Get batched tasks (groups trivial/simple tasks by agent)
-            next_tasks = self._get_batched_tasks(orchestrator, max_agents=free_slots)
+            # Get batched tasks (groups trivial/simple tasks by agent),
+            # excluding roles that are already busy so we don't spam them
+            next_tasks = self._get_batched_tasks(
+                orchestrator,
+                max_agents=free_slots,
+                busy_roles=busy_roles,
+            )
             
             if not next_tasks:
                 # Check if all done
@@ -114,8 +176,10 @@ class AutoDispatcher:
                     await self._log_status(f"🎉 All {summary['total_tasks']} tasks completed!")
                     return False
                 elif len(busy_roles) > 0:
-                    # Other workers still busy, no message needed
+                    # Other workers still busy - schedule a watchdog check
                     logger.debug(f"No new tasks to dispatch, {len(busy_roles)} agents still busy")
+                    # Schedule watchdog to check again in a few seconds
+                    asyncio.create_task(self._watchdog_check(delay_seconds=10))
                     return False
                 else:
                     await self._log_status("No more dispatchable tasks (waiting for dependencies)")
@@ -153,7 +217,7 @@ class AutoDispatcher:
             
             return dispatched > 0
     
-    def _get_batched_tasks(self, orchestrator, max_agents: int = 3) -> list:
+    def _get_batched_tasks(self, orchestrator, max_agents: int = 3, busy_roles: Optional[set] = None) -> list:
         """
         Get tasks grouped by agent, batching trivial/simple tasks together.
         
@@ -163,6 +227,10 @@ class AutoDispatcher:
         """
         # Get all dispatchable tasks (more than we need for batching)
         all_tasks = orchestrator.get_next_dispatchable_tasks(max_count=max_agents * 5)
+
+        # If certain agent roles are already busy, avoid queuing more work for them
+        if busy_roles:
+            all_tasks = [t for t in all_tasks if t.agent_role not in busy_roles]
         
         if not all_tasks or not self._enable_batching:
             return all_tasks[:max_agents]
@@ -222,14 +290,28 @@ class AutoDispatcher:
         Called on "go" command or startup.
         """
         from core.swarm_orchestrator import get_orchestrator
+        from core.chatroom import get_chatroom
+
         orchestrator = get_orchestrator()
-        
         if not orchestrator or not orchestrator._initialized:
             logger.warning("AutoDispatcher: Cannot dispatch - orchestrator not ready")
             return False
-        
-        # Get batched tasks (groups trivial/simple tasks)
-        next_tasks = self._get_batched_tasks(orchestrator, max_agents=self.MAX_PARALLEL_AGENTS)
+
+        # Look at current workers so we don't try to pile more work onto
+        # roles that are already busy.
+        chatroom = await get_chatroom()
+        busy_roles = set()
+        if chatroom:
+            for agent in chatroom._agents.values():
+                if agent.status.value == "working":
+                    busy_roles.add(getattr(agent, "role", "unknown"))
+
+        # Get batched tasks (groups trivial/simple tasks), skipping busy roles
+        next_tasks = self._get_batched_tasks(
+            orchestrator,
+            max_agents=self.MAX_PARALLEL_AGENTS,
+            busy_roles=busy_roles,
+        )
         
         if not next_tasks:
             summary = orchestrator.get_state_summary()

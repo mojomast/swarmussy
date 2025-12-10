@@ -138,6 +138,9 @@ class BaseAgent(ABC):
         # Short-term memory: recent messages
         self._short_term_memory: List[Message] = []
         
+        # Track context reset - when reset, we only use messages after this index
+        self._context_reset_msg_index: int = 0  # Index in global_history to start from
+        
         # Memory manager for long-term storage
         self._memory_manager = ConversationMemoryManager(self.agent_id)
         
@@ -365,7 +368,13 @@ Keep chat responses concise and focused on the task. Use the tools for the heavy
         })
         
         # Build role-aware view of recent history - use configured count
-        recent_messages = global_history[-context_msg_count:]
+        # If context was reset, only use messages after the reset point
+        if self._context_reset_msg_index > 0 and self._context_reset_msg_index < len(global_history):
+            # Use messages from reset point onwards, limited by context_msg_count
+            available_history = global_history[self._context_reset_msg_index:]
+            recent_messages = available_history[-context_msg_count:] if len(available_history) > context_msg_count else available_history
+        else:
+            recent_messages = global_history[-context_msg_count:]
         is_architect = "Architect" in self.__class__.__name__ or "Architect" in self.name
 
         if is_architect:
@@ -629,8 +638,8 @@ Keep chat responses concise and focused on the task. Use the tools for the heavy
                 completion_tokens = data['usage'].get('completion_tokens', 0)
                 current_task = getattr(self, 'current_task_description', '')
                 tracker.add_usage(prompt_tokens, completion_tokens, agent_name=self.name, task=current_task)
-                # If a single request's prompt context is very large, nudge
-                # the orchestrator to consider a handoff to a fresh worker.
+                # If a single request's prompt context is very large, automatically
+                # reset the agent's context to prevent runaway token usage.
                 try:
                     CONTEXT_HANDOFF_THRESHOLD = 80_000
                     if (
@@ -642,18 +651,41 @@ Keep chat responses concise and focused on the task. Use the tools for the heavy
 
                         self._context_handoff_task_id = self.current_task_id
                         chatroom = await get_chatroom()
+                        
+                        # Log the handoff
+                        logger.warning(
+                            f"[{self.name}] Context too large ({prompt_tokens} tokens), "
+                            "performing automatic context reset"
+                        )
+                        
+                        # AUTOMATIC HANDOFF: Clear this agent's short-term memory
+                        # This gives them a fresh context for subsequent calls
+                        
+                        # Clear memory and set reset index to skip old messages in _prepare_messages
+                        self._short_term_memory = self._short_term_memory[-2:] if len(self._short_term_memory) > 2 else self._short_term_memory
+                        
+                        # Mark the reset point in global history so we don't send old messages to API
+                        self._context_reset_msg_index = max(0, len(chatroom.state.messages) - 2)
+                        
+                        # Build a summary of current task to inject as fresh context
+                        task_reminder = ""
+                        task_desc = getattr(self, 'current_task_description', '')
+                        if task_desc:
+                            # Truncate task description to avoid bloating again
+                            task_summary = task_desc[:500] + "..." if len(task_desc) > 500 else task_desc
+                            task_reminder = f"\n\nYour current task: {task_summary}\n\nContinue where you left off - complete this task and call complete_my_task() when done."
+                        
+                        # Broadcast a notice with task reminder
                         await chatroom.add_human_message(
                             content=(
-                                f"Context for {self.name}'s current task has grown to about "
-                                f"{prompt_tokens} prompt tokens. "
-                                "Please hand off this work to a fresh worker with a concise summary "
-                                "so future calls stay under ~80k tokens of context."
+                                f"⚠️ Context reset for {self.name} (was {prompt_tokens:,} tokens). "
+                                f"Continuing with fresh context.{task_reminder}"
                             ),
                             username="Auto Orchestrator",
                             user_id="auto_orchestrator",
                         )
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Context handoff error: {e}")
             
             # Log successful response to TUI
             if callback:

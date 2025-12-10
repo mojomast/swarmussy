@@ -58,6 +58,9 @@ class Chatroom:
         # Control whether history is loaded from disk during initialize
         self._load_history_on_init = load_history
         self._max_in_memory_messages = 500
+        # Throttle status messages to reduce noise
+        self._last_status_time: Dict[str, float] = {}  # throttle_key -> last broadcast time
+        self._status_throttle_seconds = 8.0  # Don't repeat same agent status within this window
     
     async def initialize(self, agents: Optional[List[BaseAgent]] = None):
         """
@@ -128,10 +131,34 @@ class Chatroom:
             target_class = AGENT_CLASSES[role]
             existing_of_type = [a for a in self._agents.values() if isinstance(a, target_class)]
 
-            singleton_roles = {"project_manager", "backend_dev", "frontend_dev", "qa_engineer", "devops", "tech_writer"}
-            if role in singleton_roles and existing_of_type:
+            # Only allow one project_manager ever. For worker roles, allow spawning
+            # a second instance if the existing one is busy AND there's non-colliding work.
+            strict_singleton_roles = {"project_manager"}
+            worker_roles = {"backend_dev", "frontend_dev", "qa_engineer", "devops", "tech_writer"}
+            
+            if role in strict_singleton_roles and existing_of_type:
                 logger.info(f"{role} already active; reusing existing instance")
                 return existing_of_type[0]
+            
+            if role in worker_roles and existing_of_type:
+                # Check if ALL existing agents of this role are busy
+                all_busy = all(a.status.value == "working" for a in existing_of_type)
+                
+                if not all_busy:
+                    # At least one is idle - reuse that one
+                    idle_agent = next((a for a in existing_of_type if a.status.value != "working"), None)
+                    if idle_agent:
+                        logger.info(f"{role} has idle instance; reusing {idle_agent.name}")
+                        return idle_agent
+                
+                # All existing are busy - allow spawning a second if we haven't hit limit
+                MAX_WORKERS_PER_ROLE = 2
+                if len(existing_of_type) >= MAX_WORKERS_PER_ROLE:
+                    logger.info(f"{role} has {len(existing_of_type)} workers (max {MAX_WORKERS_PER_ROLE}); reusing first")
+                    return existing_of_type[0]
+                
+                # Spawn a second worker!
+                logger.info(f"{role} is busy; spawning additional worker #{len(existing_of_type) + 1}")
 
             count = len(existing_of_type)
 
@@ -388,8 +415,23 @@ class Chatroom:
                 logger.error(f"Error getting response from {agent.name}: {e}")
                 return None
     
-    async def _broadcast_status(self, status_text: str):
-        """Broadcast a status update (not stored in history, just for display)."""
+    async def _broadcast_status(self, status_text: str, throttle_key: str = None):
+        """Broadcast a status update (not stored in history, just for display).
+        
+        Args:
+            status_text: The status message to display
+            throttle_key: If provided, throttle repeated messages with this key
+        """
+        import time
+        
+        # Throttle repeated status messages
+        if throttle_key:
+            now = time.time()
+            last_time = self._last_status_time.get(throttle_key, 0)
+            if now - last_time < self._status_throttle_seconds:
+                return  # Skip - too soon since last broadcast
+            self._last_status_time[throttle_key] = now
+        
         status_msg = Message(
             content=status_text,
             sender_name="System",
@@ -482,9 +524,9 @@ class Chatroom:
             
             return []
 
-        # Announce that these agents are thinking, so the UI shows activity immediately
+        # Announce that these agents are thinking (throttled to reduce noise)
         for agent in speakers:
-            await self._broadcast_status(f"⏳ {agent.name} is thinking...")
+            await self._broadcast_status(f"⏳ {agent.name} is thinking...", throttle_key=f"thinking_{agent.name}")
 
         # Kick off API/tool work in parallel, bounded by MAX_CONCURRENT_API_CALLS via _get_agent_response
         tasks = {asyncio.create_task(self._get_agent_response(agent)): agent for agent in speakers}
@@ -527,7 +569,8 @@ class Chatroom:
         if workers_with_tasks:
             worker_names = [w.name for w in workers_with_tasks]
             logger.info(f"Workers with tasks: {worker_names}")
-            await self._broadcast_status(f"⚡ {len(workers_with_tasks)} worker(s) processing tasks...")
+            # Throttle the "workers processing" message heavily - only show every 10 seconds
+            await self._broadcast_status(f"⚡ {len(workers_with_tasks)} worker(s) processing tasks...", throttle_key="workers_processing")
             # Run another round to let workers respond
             await asyncio.sleep(1.0)
             worker_messages = await self._run_worker_round(workers_with_tasks)
@@ -602,9 +645,9 @@ class Chatroom:
         if not active_workers:
             return worker_messages
 
-        # Broadcast that workers are actively processing tasks
+        # Broadcast that workers are actively processing tasks (throttled)
         for worker in active_workers:
-            await self._broadcast_status(f"⏳ {worker.name} is working on task...")
+            await self._broadcast_status(f"⏳ {worker.name} is working on task...", throttle_key=f"working_{worker.name}")
 
         tasks = {asyncio.create_task(self._get_agent_response(worker)): worker for worker in active_workers}
 

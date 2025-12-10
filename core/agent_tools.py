@@ -662,12 +662,44 @@ class AgentToolExecutor:
         # FIX: Agents often include "shared/" in paths but commands already run from shared/
         # This causes paths like shared/shared/frontend/... - fix it automatically
         import re
+        import os as _os
+        
         # Fix --prefix shared/... -> --prefix ...
         command = re.sub(r'--prefix\s+shared/', '--prefix ', command)
         # Fix cd shared/ -> cd .
         command = re.sub(r'\bcd\s+shared/?(?=\s|$)', 'cd .', command)
         # Fix paths like "shared/frontend" in common patterns
         command = re.sub(r'(?<=\s)shared/(?=\w)', '', command)
+        
+        # AUTO-CONVERT Unix commands to Windows equivalents on Windows
+        if _os.name == "nt":
+            original_cmd = command
+            # Simple command translations (only at start of command or after ; or &&)
+            unix_to_windows = {
+                r'^ls\b': 'dir',
+                r'^ls -la\b': 'dir',
+                r'^ls -l\b': 'dir',
+                r'^ls -a\b': 'dir /a',
+                r'^pwd\b': 'cd',
+                r'^cat\b': 'type',
+                r'^rm\b': 'del',
+                r'^rm -rf\b': 'rmdir /s /q',
+                r'^cp\b': 'copy',
+                r'^mv\b': 'move',
+                r'^mkdir -p\b': 'mkdir',
+                r'^touch\b': 'type nul >',
+            }
+            for unix_pattern, windows_cmd in unix_to_windows.items():
+                command = re.sub(unix_pattern, windows_cmd, command, flags=re.IGNORECASE)
+            
+            # Also handle commands after semicolons (common pattern: ls; pwd)
+            for unix_pattern, windows_cmd in unix_to_windows.items():
+                # Match after ; or && 
+                command = re.sub(r';\s*' + unix_pattern[1:], f'; {windows_cmd}', command, flags=re.IGNORECASE)
+                command = re.sub(r'&&\s*' + unix_pattern[1:], f'&& {windows_cmd}', command, flags=re.IGNORECASE)
+            
+            if command != original_cmd:
+                logger.debug(f"Auto-converted Unix command to Windows: {original_cmd} -> {command}")
         
         # Allowed commands (whitelist approach) - expanded for better dev experience
         allowed_prefixes = [
@@ -701,12 +733,52 @@ class AgentToolExecutor:
             }
         
         try:
+            # Check if there's a venv to use for Python/pytest commands
+            import os
+            env = os.environ.copy()  # Start with current env
+            python_cmds = ["python", "pip", "pytest", "mypy", "black", "ruff", "flake8", "isort"]
+            venv_python = None
+            
+            if any(cmd_lower.startswith(p) for p in python_cmds):
+                # Look for venv in the project
+                project_path = self.agent_workspace.parent  # shared/ -> project_root
+                venv_paths = [
+                    project_path / ".venv",
+                    project_path / "venv",
+                    self.agent_workspace / ".venv",
+                    self.agent_workspace / "venv",
+                ]
+                for venv_path in venv_paths:
+                    if venv_path.exists():
+                        # Add venv to PATH
+                        if os.name == "nt":
+                            venv_bin = venv_path / "Scripts"
+                            venv_python = venv_bin / "python.exe"
+                        else:
+                            venv_bin = venv_path / "bin"
+                            venv_python = venv_bin / "python"
+                        if venv_bin.exists():
+                            env["PATH"] = str(venv_bin) + os.pathsep + env.get("PATH", "")
+                            env["VIRTUAL_ENV"] = str(venv_path)
+                            logger.debug(f"Using venv at {venv_path}")
+                            break
+                
+                # Convert bare pytest/pip commands to python -m versions for better compatibility
+                if cmd_lower.startswith("pytest") and venv_python and venv_python.exists():
+                    # Replace "pytest" with "python -m pytest" using venv python
+                    command = command.replace("pytest", f'"{venv_python}" -m pytest', 1)
+                    logger.debug(f"Converted pytest command to: {command}")
+                elif cmd_lower.startswith("pip") and venv_python and venv_python.exists():
+                    command = command.replace("pip", f'"{venv_python}" -m pip', 1)
+                    logger.debug(f"Converted pip command to: {command}")
+            
             # Run in agent workspace
             proc = await asyncio.create_subprocess_shell(
                 command,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                cwd=str(self.agent_workspace)
+                cwd=str(self.agent_workspace),
+                env=env
             )
             
             # Stream output if status callback is available
@@ -1530,8 +1602,65 @@ class AgentToolExecutor:
                 task_num_match = re.search(r'Task\s+(\d+\.\d+)', task_desc)
                 if task_num_match:
                     orch_task_id = task_num_match.group(1)
-                    orchestrator.mark_task_completed(orch_task_id)
-                    logger.debug(f"Orchestrator updated: task {orch_task_id} completed")
+
+                    # Detect when the worker is reporting mis-assigned work
+                    # instead of actually completing the underlying devplan task.
+                    summary_lower = result_summary.lower()
+
+                    rerouted = False
+                    
+                    # Detect frontend agent reporting this is backend work
+                    # Broader heuristics to catch various phrasings
+                    is_backend_handoff = (
+                        "backend work for codey" in summary_lower
+                        or "backend-focused" in summary_lower
+                        or "this is backend work" in summary_lower
+                        or ("requires backend" in summary_lower and "not frontend" in summary_lower)
+                        or ("no frontend changes" in summary_lower and ("backend" in summary_lower or "codey" in summary_lower))
+                        or "backend team" in summary_lower
+                        or "for codey mcbackend" in summary_lower
+                    )
+                    
+                    # Detect backend agent reporting this is frontend work
+                    is_frontend_handoff = (
+                        "frontend work for pixel" in summary_lower
+                        or "frontend-focused" in summary_lower
+                        or "this is frontend work" in summary_lower
+                        or ("requires frontend" in summary_lower and "not backend" in summary_lower)
+                        or ("no backend changes" in summary_lower and ("frontend" in summary_lower or "pixel" in summary_lower))
+                        or "frontend team" in summary_lower
+                        or "for pixel mcfrontend" in summary_lower
+                    )
+                    
+                    if is_backend_handoff:
+                        try:
+                            rerouted = orchestrator.reroute_task(
+                                orch_task_id,
+                                new_agent_role="backend_dev",
+                                new_agent_name="Codey McBackend",
+                            )
+                            if rerouted:
+                                logger.info(f"Rerouted task {orch_task_id} to backend_dev based on handoff")
+                        except Exception as e:
+                            logger.debug(f"Could not reroute task {orch_task_id} to backend_dev: {e}")
+
+                    elif is_frontend_handoff:
+                        try:
+                            rerouted = orchestrator.reroute_task(
+                                orch_task_id,
+                                new_agent_role="frontend_dev",
+                                new_agent_name="Pixel McFrontend",
+                            )
+                            if rerouted:
+                                logger.info(f"Rerouted task {orch_task_id} to frontend_dev based on handoff")
+                        except Exception as e:
+                            logger.debug(f"Could not reroute task {orch_task_id} to frontend_dev: {e}")
+
+                    if rerouted:
+                        logger.debug(f"Orchestrator rerouted task {orch_task_id} based on agent handoff summary")
+                    else:
+                        orchestrator.mark_task_completed(orch_task_id)
+                        logger.debug(f"Orchestrator updated: task {orch_task_id} completed")
         except Exception as e:
             logger.debug(f"Could not update orchestrator: {e}")
         
@@ -1592,13 +1721,19 @@ class AgentToolExecutor:
         
         This reduces API round-trips when an agent needs to understand
         multiple files before making changes.
+        
+        Limit: 10 files per call. Split larger lists into multiple calls.
         """
         paths = args.get("paths", [])
         if not paths:
             return {"success": False, "error": "paths is required (list of file paths)"}
         
         if len(paths) > 10:
-            return {"success": False, "error": "Maximum 10 files per batch read"}
+            return {
+                "success": False, 
+                "error": f"Maximum 10 files per batch read. You requested {len(paths)} files. "
+                         f"Please split your list into multiple calls of ≤10 files each."
+            }
         
         results = {}
         errors = []
@@ -2367,8 +2502,35 @@ class AgentToolExecutor:
     _project_structure_cache: Dict[str, tuple] = {}  # {path: (timestamp, result)}
     _STRUCTURE_CACHE_TTL = 60.0  # Cache for 60 seconds
     
+    # Directories to always skip - these bloat context without adding value
+    _EXCLUDED_DIRS = {
+        '.venv', 'venv', '.env', 'env',  # Python virtual environments
+        'node_modules',                   # Node.js dependencies
+        '.git',                           # Git internals
+        '__pycache__', '.pytest_cache',   # Python cache
+        '.idea', '.vscode',               # IDE configs
+        '.mypy_cache', '.ruff_cache',     # Linter caches
+        'dist', 'build', '.next',         # Build outputs
+        'coverage', 'htmlcov', '.tox',    # Test coverage
+        '.eggs', '*.egg-info',            # Python packaging
+        'Lib', 'Scripts', 'Include',      # Windows venv internals
+        'lib', 'bin', 'lib64',            # Unix venv internals
+        'site-packages',                  # Installed packages
+    }
+    
+    # Maximum lines to return to prevent context explosion
+    _MAX_STRUCTURE_LINES = 150
+    
     async def _get_project_structure(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Get a tree view of the project structure (cached for efficiency)."""
+        """Get a tree view of the project structure (cached, filtered, capped).
+        
+        This tool intentionally excludes:
+        - .venv, node_modules, .git, __pycache__ and other heavy directories
+        - Build outputs and IDE configs
+        
+        Output is capped at ~150 lines to prevent context bloat.
+        Use this to understand project shape, not to enumerate dependencies.
+        """
         import time
         path = args.get("path", "shared")
         max_depth = args.get("max_depth", 4)
@@ -2388,31 +2550,62 @@ class AgentToolExecutor:
         if not resolved.exists():
             return {"success": False, "error": f"Path not found: {path}"}
         
+        line_count = [0]  # Use list to allow mutation in nested function
+        
+        def should_skip(name: str) -> bool:
+            """Check if directory should be skipped."""
+            return name in AgentToolExecutor._EXCLUDED_DIRS or name.endswith('.egg-info')
+        
         def build_tree(dir_path: Path, prefix: str = "", depth: int = 0) -> str:
             if depth > max_depth:
                 return prefix + "...\n"
             
+            if line_count[0] >= AgentToolExecutor._MAX_STRUCTURE_LINES:
+                return ""
+            
             lines = []
             try:
-                items = sorted(dir_path.iterdir(), key=lambda x: (not x.is_dir(), x.name))
+                # Filter out excluded directories before sorting
+                items = [
+                    item for item in dir_path.iterdir()
+                    if not (item.is_dir() and should_skip(item.name))
+                ]
+                items = sorted(items, key=lambda x: (not x.is_dir(), x.name))
+                
                 for i, item in enumerate(items):
+                    if line_count[0] >= AgentToolExecutor._MAX_STRUCTURE_LINES:
+                        lines.append(f"{prefix}... (output truncated, {AgentToolExecutor._MAX_STRUCTURE_LINES} line limit)")
+                        break
+                    
                     is_last = i == len(items) - 1
                     connector = "└── " if is_last else "├── "
                     
                     if item.is_dir():
                         lines.append(f"{prefix}{connector}{item.name}/")
+                        line_count[0] += 1
                         extension = "    " if is_last else "│   "
-                        lines.append(build_tree(item, prefix + extension, depth + 1))
+                        subtree = build_tree(item, prefix + extension, depth + 1)
+                        if subtree:
+                            lines.append(subtree)
                     else:
                         size = item.stat().st_size
                         size_str = f"{size}B" if size < 1024 else f"{size//1024}KB"
                         lines.append(f"{prefix}{connector}{item.name} ({size_str})")
+                        line_count[0] += 1
             except PermissionError:
                 lines.append(f"{prefix}[Permission Denied]")
             
             return "\n".join(lines)
         
         tree = f"{path}/\n{build_tree(resolved)}"
+        
+        # Add note about excluded dirs if any would have been present
+        excluded_present = [
+            d for d in AgentToolExecutor._EXCLUDED_DIRS 
+            if (resolved / d).exists()
+        ]
+        if excluded_present:
+            tree += f"\n\n[Excluded: {', '.join(sorted(excluded_present)[:5])}{'...' if len(excluded_present) > 5 else ''}]"
         
         result = {
             "success": True,
@@ -2910,7 +3103,7 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "get_project_structure",
-            "description": "Get a tree view of the project directory structure.",
+            "description": "Get a tree view of the project directory structure. Excludes .venv, node_modules, .git, __pycache__, and other heavy directories. Output capped at 150 lines. Use this to understand project shape, not to enumerate dependencies.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -3004,14 +3197,14 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "read_multiple_files",
-            "description": "Read multiple files in a single call. More efficient than calling read_file multiple times. Use this when you need to understand several related files before making changes.",
+            "description": "Read multiple files in a single call (max 10 files). More efficient than calling read_file multiple times. If you need more than 10 files, split into multiple calls of ≤10 each.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "paths": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "List of file paths to read (max 10 files)"
+                        "description": "List of file paths to read (max 10 files per call)"
                     }
                 },
                 "required": ["paths"]

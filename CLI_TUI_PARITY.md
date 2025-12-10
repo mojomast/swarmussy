@@ -13,6 +13,19 @@ This document describes the refactoring work done to achieve feature parity betw
 | `core/session_controller.py` | Shared controller that both TUI and CLI use |
 | `tests/test_session_controller.py` | Unit tests for the shared controller |
 
+Phase 0 project bootstrap and Devussy orchestration are also shared:
+
+- `core/project_bootstrap.py` runs once per Devussy project in both TUI and CLI:
+  - Creates a Python `.venv` at the **project root** (outside `scratch/shared/`)
+  - Ensures `scratch/shared/requirements.txt` exists and always includes `pytest`
+  - Installs Python deps from `scratch/shared/requirements.txt`
+  - If `scratch/shared/package.json` exists, runs `npm install` in `scratch/shared/`
+  - Scaffolds `src/`, `tests/`, `docs/`, `config/` (and basic frontend dirs for web stacks)
+- `core/agent_tools.py` and `agents/lean_prompts.py` enforce design-driven behavior in both modes:
+  - Backend/frontend workers must read `project_design.md` and follow its tech stack (no Flask→FastAPI or React+Vite→Webpack swaps unless the design or user says so)
+  - `get_project_structure` is cached and filters heavy dirs (`.venv`, `node_modules`, `.git`, `__pycache__`, IDE caches, build outputs)
+  - `read_multiple_files` batch-reads up to 10 files and asks the agent to split larger lists into multiple calls.
+
 ### Modified Files
 
 | File | Changes |

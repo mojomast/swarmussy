@@ -503,6 +503,7 @@ class SwarmOrchestrator:
                 for task in phase.tasks.values():
                     state_data["tasks"][task.id] = {
                         "state": task.state.value,
+                        "agent_role": task.agent_role,
                         "agent_name": task.agent_name,
                         "assigned_at": task.assigned_at.isoformat() if task.assigned_at else None,
                         "completed_at": task.completed_at.isoformat() if task.completed_at else None,
@@ -536,8 +537,14 @@ class SwarmOrchestrator:
                     except ValueError:
                         task.state = TaskState.PENDING
                     
-                    task.agent_name = task_state.get("agent_name", "")
-                    
+                    # Restore agent routing overrides if present
+                    if "agent_role" in task_state:
+                        task.agent_role = task_state["agent_role"]
+                    if task_state.get("agent_name"):
+                        task.agent_name = task_state.get("agent_name", "")
+
+                    # Ensure batch key matches current routing
+                    task.batch_key = f"{task.agent_role}_{task.phase}"
                     if task_state.get("assigned_at"):
                         try:
                             task.assigned_at = datetime.fromisoformat(task_state["assigned_at"])
@@ -721,6 +728,43 @@ class SwarmOrchestrator:
             
             if self._on_task_complete:
                 self._on_task_complete(task)
+
+    def reroute_task(self, task_id: str, new_agent_role: str, new_agent_name: Optional[str] = None) -> bool:
+        """Reroute a task to a different agent without marking it complete.
+
+        This is used when a worker reports that the task actually belongs to
+        another specialist (e.g., frontend_dev detects backend-only work).
+        The task is reset to PENDING so it can be dispatched again.
+        """
+        task = self._find_task(task_id)
+        if not task:
+            return False
+
+        # Update routing info
+        task.agent_role = new_agent_role
+        if new_agent_name:
+            task.agent_name = new_agent_name
+        else:
+            task.agent_name = AGENT_NAMES.get(new_agent_role, new_agent_role)
+
+        # Recompute batch key so future batching respects new routing
+        task.batch_key = f"{task.agent_role}_{task.phase}"
+
+        # Reset state so it can be re-dispatched
+        task.state = TaskState.PENDING
+        task.assigned_at = None
+        task.completed_at = None
+
+        # Ensure phase is marked in progress if it has outstanding work
+        phase = self.phases.get(task.phase)
+        if phase and not phase.is_complete:
+            phase.state = PhaseState.IN_PROGRESS
+
+        # Persist and update dashboards
+        self._save_task_state()
+        self._update_task_queue_file()
+        logger.info(f"Rerouted task {task_id} to {task.agent_name} ({task.agent_role})")
+        return True
     
     def get_state_summary(self) -> Dict[str, Any]:
         """Get orchestration state for Architect context."""

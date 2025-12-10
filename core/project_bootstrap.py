@@ -27,12 +27,16 @@ class ProjectBootstrap:
     Handles automatic project environment setup.
     
     Called after devussy pipeline completes but before swarm tasks start.
+    
+    NOTE: .venv is created at PROJECT ROOT (not in shared/) so that agent tools
+    operating inside shared/ don't see it and bloat their context with dependency trees.
     """
     
     def __init__(self, project_path: Path):
         self.project_path = Path(project_path)
         self.shared_dir = self.project_path / "scratch" / "shared"
-        self.venv_path = self.shared_dir / ".venv"
+        # Place .venv at project root, NOT in shared/ - keeps it out of agent view
+        self.venv_path = self.project_path / ".venv"
         self._log_callback = None
         
     def set_log_callback(self, callback):
@@ -136,28 +140,31 @@ class ProjectBootstrap:
         """
         Create Python virtual environment and install dependencies.
         
+        The .venv is created at PROJECT ROOT (not shared/) so agents don't see it.
+        Requirements are still installed from shared/requirements.txt.
+        
         Returns (success, message).
         """
         if self.venv_path.exists():
-            self._log(".venv already exists, skipping creation")
+            self._log(f".venv already exists at {self.venv_path}, skipping creation")
             return True, "venv already exists"
         
-        self._log("Creating Python virtual environment...")
+        self._log(f"Creating Python virtual environment at {self.venv_path}...")
         
         try:
-            # Create venv
+            # Create venv at project root (not in shared/)
             result = subprocess.run(
                 [sys.executable, "-m", "venv", str(self.venv_path)],
                 capture_output=True,
                 text=True,
                 timeout=60,
-                cwd=str(self.shared_dir),
+                cwd=str(self.project_path),  # Run from project root
             )
             
             if result.returncode != 0:
                 return False, f"Failed to create venv: {result.stderr}"
             
-            self._log("✅ Created .venv")
+            self._log(f"✅ Created .venv at project root (outside shared/)")
             
             # Determine pip path
             if os.name == 'nt':  # Windows
@@ -172,33 +179,44 @@ class ProjectBootstrap:
                 [str(python_path), "-m", "pip", "install", "--upgrade", "pip"],
                 capture_output=True,
                 timeout=120,
-                cwd=str(self.shared_dir),
+                cwd=str(self.project_path),
             )
             
-            # Install requirements if exists
+            # Ensure requirements.txt in shared/ exists and includes pytest
             requirements_file = self.shared_dir / "requirements.txt"
             if requirements_file.exists():
-                self._log("Installing requirements.txt...")
-                result = subprocess.run(
-                    [str(pip_path), "install", "-r", str(requirements_file)],
-                    capture_output=True,
-                    text=True,
-                    timeout=300,
-                    cwd=str(self.shared_dir),
-                )
-                if result.returncode == 0:
-                    self._log("✅ Installed requirements")
-                else:
-                    self._log(f"⚠️ Some requirements failed: {result.stderr[:200]}")
+                try:
+                    existing = requirements_file.read_text(encoding="utf-8")
+                except Exception:
+                    existing = ""
+                if "pytest" not in existing:
+                    self._log("Ensuring pytest is present in requirements.txt...")
+                    # Preserve existing content, just append pytest on its own line
+                    updated = (existing.rstrip() + "\npytest\n") if existing else "pytest\n"
+                    requirements_file.write_text(updated, encoding="utf-8")
             else:
-                # Create basic requirements.txt
-                self._log("Creating basic requirements.txt...")
+                # Create basic requirements.txt in shared/ with pytest included
+                self._log("Creating basic requirements.txt in shared/... (with pytest)")
                 requirements_file.write_text(
-                    "# Project requirements\n# Add your dependencies here\n",
+                    "# Project requirements\n# Add your dependencies here\npytest\n",
                     encoding="utf-8"
                 )
+
+            # Install requirements from shared/
+            self._log("Installing requirements.txt...")
+            result = subprocess.run(
+                [str(pip_path), "install", "-r", str(requirements_file)],
+                capture_output=True,
+                text=True,
+                timeout=300,
+                cwd=str(self.shared_dir),  # Run from shared/ for relative paths
+            )
+            if result.returncode == 0:
+                self._log("✅ Installed requirements (including pytest)")
+            else:
+                self._log(f"⚠️ Some requirements failed: {result.stderr[:200]}")
             
-            return True, "venv created successfully"
+            return True, f"venv created at {self.venv_path}"
             
         except subprocess.TimeoutExpired:
             return False, "Timeout creating venv"

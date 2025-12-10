@@ -39,36 +39,62 @@ class Architect(BaseAgent):
         )
         super().__init__(config)
     
-    def should_respond(self, message) -> bool:
+    def should_respond(self) -> bool:
         """
         Override to disable Architect when AutoDispatcher is active.
         
-        The Architect only responds to:
-        - Direct mentions of "Architect" or "Bossy"
-        - Explicit requests for design/planning help
-        - NOT "go" commands (AutoDispatcher handles those)
+        The Architect ONLY responds to:
+        - Direct mentions of "Architect" or "Bossy" by a HUMAN
+        - NOT task completions, not system messages, not worker messages
+        
+        AutoDispatcher handles ALL orchestration now.
         """
-        from core.auto_dispatcher import get_auto_dispatcher
+        # Find the last message in memory to check content
+        last_message = None
+        for msg in reversed(self._short_term_memory):
+            if msg.content:
+                last_message = msg
+                break
         
-        content = message.content.lower() if message.content else ""
+        if not last_message:
+            return False
         
-        # Never respond to "go" - AutoDispatcher handles it
+        content = last_message.content.lower() if last_message.content else ""
+        sender_name = getattr(last_message, 'sender_name', '') or ''
+        role = getattr(last_message, 'role', None)
+        
+        # NEVER respond to system messages, auto-orchestrator, or agent messages
+        if sender_name in ("System", "Auto Orchestrator", "AutoDispatch"):
+            return False
+        if role and role.value in ("system", "assistant"):
+            return False
+        
+        # NEVER respond to task completions or status updates
+        if "task complete" in content or "✅" in content:
+            return False
+        
+        # NEVER respond to "go" commands
         if content.strip() == "go":
             return False
         
-        # Never respond to auto-orchestrator messages (AutoDispatcher handles continuation)
-        if message.sender_name == "Auto Orchestrator":
+        # NEVER respond to get_next_task results or dispatch messages
+        if any(kw in content for kw in ["dispatching", "dispatched", "assigned to", "next task"]):
             return False
         
-        # Only respond if explicitly mentioned
+        # ONLY respond if a HUMAN explicitly mentions the Architect
+        # Check if this looks like a human message (not from an agent)
+        agent_names = ["codey", "pixel", "bugsy", "deployo", "docy", "checky"]
+        sender_lower = sender_name.lower()
+        is_agent_message = any(name in sender_lower for name in agent_names)
+        
+        if is_agent_message:
+            return False
+        
+        # Only respond to direct human mentions
         if "architect" in content or "bossy" in content:
             return True
         
-        # Or if asking for design/planning help
-        if any(kw in content for kw in ["design", "plan", "architect", "structure", "breakdown"]):
-            return True
-        
-        # Otherwise stay quiet - let workers do their thing
+        # Otherwise stay completely quiet
         return False
     
     @property
