@@ -6,6 +6,7 @@ export function useSwarm() {
   const [agents, setAgents] = useState<any[]>([]);
   const [tasks, setTasks] = useState<any[]>([]);
   const [status, setStatus] = useState<any>({});
+  const [tokenStats, setTokenStats] = useState<any>({});
   const [project, setProject] = useState<any>(null);
   const [settings, setSettings] = useState<any>({});
   const [devussy, setDevussy] = useState<any>({});
@@ -19,6 +20,7 @@ export function useSwarm() {
       setAgents(data.agents);
       setTasks(data.tasks);
       setStatus(data.status);
+      setTokenStats(data.token_stats || {});
       setProject(data.project);
       
       const setts = await fetchSettings();
@@ -75,6 +77,7 @@ export function useSwarm() {
     agents,
     tasks,
     status,
+    tokenStats,
     project,
     settings,
     devussy,

@@ -92,11 +92,16 @@ npm run dev
 - **Project Selection Screen** - Create new projects or open existing ones on startup
 - **Devussy Pipeline Integration** - Start the interview phase directly from the browser
 - **Checkpoint Resume** - Resume Devussy pipeline from any previous stage/artifact
-- **Provider Settings** - Configure API keys for Requesty, OpenAI, Anthropic, Z.AI
-- **Model Configuration** - Set models per pipeline stage and per agent
-- **Real-time Chat** - WebSocket-based chat with live agent responses
-- **File Browser** - Browse and view project files
-- **Task Board** - Monitor task progress and agent status
+- **Provider & Model Settings** - Configure API keys for Requesty, OpenAI, Anthropic, Z.AI, and choose models for Architect and worker agents
+- **Modern Swarm Dashboard Layout**
+  - Left: **ChatPanel** with split-view columns (System Console, Orchestrator & User, per-agent streams)
+  - Middle: **Swarm Agents** list with active agents at the top and a collapsible "All Agents" section
+  - Right: **Project Dashboard** and **Task Board** showing phases, tasks, blockers, and token usage
+- **System Console Column** - Dedicated stream for system/status output, tool logs, and diagnostics so worker chatter stays separate from orchestration
+- **Agent Settings Panel** - Per‑agent modal for model selection, max tokens, max tool retries, temperature, timeout, and enable/disable toggles
+- **Project‑Aware Assistant Chat** - Floating assistant chat that understands the current project/devplan and can suggest improvements or task/phase tweaks
+- **Enhanced Task Board** - Human‑readable task list grouped by phase with status, priority, blockers, and expand/collapse details
+- **File Browser** - Browse and view project files from the browser
 
 ## How It Works
 

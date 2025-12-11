@@ -2097,5 +2097,27 @@ The Vite dev server proxies `/api/*` and `/ws/*` to the backend automatically.
 - 🔑 **API Keys** - Provider settings
 - ⚙️ **Settings** - General settings
 
+### 6. Web Swarm Dashboard Layout & Assistant
+
+Once a project is selected and (optionally) Devussy has generated a plan, the main web dashboard mirrors the TUI concepts with a modern three-column layout:
+
+- **Left: Chat & System Console**
+  - `ChatPanel` shows a split view with:
+    - A **System Console** column dedicated to system/status/tool output (no user/agent chatter).
+    - An **Orchestrator & User** column for Bossy/Checky + human conversation.
+    - Optional per-agent columns (Codey/Pixel/Bugsy/Deployo/Docy) with collapsible headers and token usage badges.
+  - Each message bubble can show input/output token counts and expand for detailed metadata (role, tool calls, etc.).
+
+- **Middle: Swarm Agents Panel**
+  - `AgentList` surfaces **active agents at the top** with current/next objectives, task IDs, and token usage.
+  - A collapsible **All Agents** section lists the full roster and their current status.
+  - A settings icon beside each agent opens the `AgentSettingsPanel`.
+
+- **Right: Project Dashboard & Task Board**
+  - `ProjectDashboard` summarizes phase completion, task counts, blockers, and token usage in a compact card.
+  - `TaskBoard` groups tasks by phase with filters (All / Active / Completed) and expandable rows showing status, priority, blockers, and done-when criteria.
+
+In addition, a floating **AssistantChat** widget can be opened from the sidebar. It uses the same Devussy/Swarm artifacts (devplan, phases, task queue, task state) to answer project questions, suggest improvements, and describe how to adjust tasks or phases before handing changes back to the Architect.
+
 *Last updated: December 10, 2025*
-*Status: Full web frontend with project management, Devussy pipeline integration, provider/model configuration, and checkpoint resume*
+*Status: Full web frontend with project management, Devussy pipeline integration, provider/model configuration, checkpoint resume, and a modern swarm dashboard layout*

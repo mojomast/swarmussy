@@ -37,7 +37,7 @@ interface Message {
 
 export function DevussyPipelineModal({ onClose, onComplete, projectName }: Props) {
   const [stage, setStage] = useState<'config' | 'interview' | 'processing' | 'complete'>('config');
-  const [models, setModels] = useState<{ id: string; name: string }[]>([]);
+  const [models, setModels] = useState<{ id: string; name: string; provider?: string }[]>([]);
   const [loadingModels, setLoadingModels] = useState(true);
   
   // Model configuration
@@ -213,23 +213,86 @@ export function DevussyPipelineModal({ onClose, onComplete, projectName }: Props
     }
   };
 
-  const ModelSelect = ({ value, onChange, label }: { value: string; onChange: (v: string) => void; label: string }) => (
-    <div>
-      <label className="block text-sm text-gray-400 mb-1">{label}</label>
-      <div className="relative">
-        <select
-          value={value}
-          onChange={(e) => onChange(e.currentTarget.value)}
-          className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2 text-white appearance-none focus:outline-none focus:ring-2 focus:ring-blue-500"
-        >
-          {models.map((m) => (
-            <option key={m.id} value={m.id}>{m.name || m.id}</option>
-          ))}
-        </select>
-        <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" size={16} />
+  // Helper to get the API source provider label for a model
+  const getProviderLabel = (modelId: string): string => {
+    // Find the model in our list to get its actual API provider
+    const model = models.find(m => m.id === modelId);
+    if (model?.provider) {
+      const labels: Record<string, string> = {
+        'requesty': 'Requesty',
+        'zai': 'Z.AI',
+        'openai': 'OpenAI Direct',
+        'anthropic': 'Anthropic Direct',
+        'fallback': 'Fallback',
+      };
+      return labels[model.provider] || model.provider;
+    }
+    return 'Unknown';
+  };
+
+  // Helper to get the model vendor (for display in option text)
+  const getModelVendor = (modelId: string): string => {
+    if (modelId.includes('/')) {
+      const vendor = modelId.split('/')[0].toLowerCase();
+      const labels: Record<string, string> = {
+        'anthropic': 'Anthropic',
+        'openai': 'OpenAI',
+        'google': 'Google',
+        'meta': 'Meta',
+        'mistral': 'Mistral',
+        'cohere': 'Cohere',
+        'deepseek': 'DeepSeek',
+        'x-ai': 'xAI',
+      };
+      return labels[vendor] || vendor.charAt(0).toUpperCase() + vendor.slice(1);
+    }
+    // Z.AI GLM models
+    if (modelId.startsWith('glm-')) return 'Z.AI';
+    return '';
+  };
+
+  const getProviderColor = (provider: string): string => {
+    const colors: Record<string, string> = {
+      'Requesty': 'bg-purple-900/40 text-purple-300',
+      'Z.AI': 'bg-cyan-900/40 text-cyan-300',
+      'OpenAI Direct': 'bg-green-900/40 text-green-300',
+      'Anthropic Direct': 'bg-orange-900/40 text-orange-300',
+      'Fallback': 'bg-gray-700 text-gray-400',
+    };
+    return colors[provider] || 'bg-gray-700 text-gray-300';
+  };
+
+  const ModelSelect = ({ value, onChange, label }: { value: string; onChange: (v: string) => void; label: string }) => {
+    const selectedProvider = getProviderLabel(value);
+    
+    return (
+      <div>
+        <label className="block text-sm text-gray-400 mb-1">{label}</label>
+        <div className="relative">
+          <select
+            value={value}
+            onChange={(e) => onChange(e.currentTarget.value)}
+            className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2 pr-10 text-white appearance-none focus:outline-none focus:ring-2 focus:ring-blue-500"
+          >
+            {models.map((m) => {
+              const vendor = getModelVendor(m.id);
+              return (
+                <option key={m.id} value={m.id}>
+                  {vendor ? `${vendor}: ` : ''}{m.name || m.id}
+                </option>
+              );
+            })}
+          </select>
+          <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" size={16} />
+        </div>
+        <div className="mt-1">
+          <span className={`text-xs px-2 py-0.5 rounded ${getProviderColor(selectedProvider)}`}>
+            {selectedProvider}
+          </span>
+        </div>
       </div>
-    </div>
-  );
+    );
+  };
 
   return (
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">

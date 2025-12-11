@@ -8,19 +8,37 @@ import { SettingsModal } from './components/SettingsModal';
 import { ProjectSelector } from './components/ProjectSelector';
 import { DevussyPipelineModal } from './components/DevussyPipelineModal';
 import { ProviderSettings } from './components/ProviderSettings';
-import { Terminal, Files, Settings, FolderOpen, Key, Sparkles } from 'lucide-preact';
-import { selectProject, resumeDevussyPipeline, setDevussyMode } from './lib/api';
+import { SplashScreen, useSplashScreen } from './components/SplashScreen';
+import { ProjectDashboard } from './components/ProjectDashboard';
+import { AgentSettingsPanel } from './components/AgentSettingsPanel';
+import { AssistantChat } from './components/AssistantChat';
+import { Terminal, Files, Settings, FolderOpen, Key, Sparkles, HelpCircle, MessageCircle } from 'lucide-preact';
+import { selectProject, resumeDevussyPipeline, setDevussyMode, updateAgentConfig } from './lib/api';
 
 type AppView = 'project-select' | 'main';
 
 export function App() {
-  const { messages, agents, tasks, status, project, connected, settings, refreshState } = useSwarm();
+  const { messages, agents, tasks, status, tokenStats, project, connected, settings, refreshState } = useSwarm();
   const [view, setView] = useState<AppView>('project-select');
   const [activeTab, setActiveTab] = useState<'chat' | 'files'>('chat');
   const [showSettings, setShowSettings] = useState(false);
   const [showProviderSettings, setShowProviderSettings] = useState(false);
   const [showDevussyPipeline, setShowDevussyPipeline] = useState(false);
   const [currentProjectName, setCurrentProjectName] = useState('');
+  const [selectedAgent, setSelectedAgent] = useState<any>(null);
+  const [showAgentSettings, setShowAgentSettings] = useState(false);
+  const [showAssistantChat, setShowAssistantChat] = useState(false);
+  const { showSplash, openSplash, closeSplash } = useSplashScreen();
+
+  const handleAgentSettingsClick = (agent: any) => {
+    setSelectedAgent(agent);
+    setShowAgentSettings(true);
+  };
+
+  const handleAgentSettingsSave = async (agentId: string, config: any) => {
+    await updateAgentConfig(agentId, config);
+    await refreshState();
+  };
 
   // Check if we should show project selector or main view
   useEffect(() => {
@@ -92,30 +110,30 @@ export function App() {
 
   // Main Application View
   return (
-    <div className="flex h-screen bg-gray-950 text-white font-sans overflow-hidden">
+    <div className="flex h-screen bg-theme-primary text-theme-secondary font-sans overflow-hidden">
       {/* Sidebar Navigation */}
-      <div className="w-16 bg-gray-900 border-r border-gray-800 flex flex-col items-center py-4 gap-4">
+      <div className="w-16 bg-theme-secondary border-r border-theme flex flex-col items-center py-4 gap-4">
         {/* Project Button */}
         <button 
           onClick={handleBackToProjects}
-          className="p-3 text-gray-400 hover:text-white hover:bg-gray-800 rounded-xl transition-colors"
+          className="p-3 text-theme-muted hover:text-theme-primary hover:bg-theme-tertiary rounded-xl transition-colors"
           title="Switch Project"
         >
           <FolderOpen size={24} />
         </button>
         
-        <div className="w-8 h-px bg-gray-700" />
+        <div className="w-8 h-px bg-theme-tertiary" />
         
         <button 
           onClick={() => setActiveTab('chat')}
-          className={`p-3 rounded-xl transition-colors ${activeTab === 'chat' ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-white hover:bg-gray-800'}`}
+          className={`p-3 rounded-xl transition-colors ${activeTab === 'chat' ? 'bg-theme-accent text-white' : 'text-theme-muted hover:text-theme-primary hover:bg-theme-tertiary'}`}
           title="Chat"
         >
           <Terminal size={24} />
         </button>
         <button 
           onClick={() => setActiveTab('files')}
-          className={`p-3 rounded-xl transition-colors ${activeTab === 'files' ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-white hover:bg-gray-800'}`}
+          className={`p-3 rounded-xl transition-colors ${activeTab === 'files' ? 'bg-theme-accent text-white' : 'text-theme-muted hover:text-theme-primary hover:bg-theme-tertiary'}`}
           title="Files"
         >
           <Files size={24} />
@@ -135,7 +153,7 @@ export function App() {
         {/* Provider Settings */}
         <button 
           onClick={() => setShowProviderSettings(true)}
-          className="p-3 text-gray-400 hover:text-white hover:bg-gray-800 rounded-xl transition-colors"
+          className="p-3 text-theme-muted hover:text-theme-primary hover:bg-theme-tertiary rounded-xl transition-colors"
           title="API Keys & Models"
         >
           <Key size={24} />
@@ -144,10 +162,28 @@ export function App() {
         {/* General Settings */}
         <button 
           onClick={() => setShowSettings(true)}
-          className="p-3 text-gray-400 hover:text-white hover:bg-gray-800 rounded-xl transition-colors"
+          className="p-3 text-theme-muted hover:text-theme-primary hover:bg-theme-tertiary rounded-xl transition-colors"
           title="Settings"
         >
           <Settings size={24} />
+        </button>
+        
+        {/* Assistant Chat Button */}
+        <button 
+          onClick={() => setShowAssistantChat(true)}
+          className="p-3 text-emerald-400 hover:text-emerald-300 hover:bg-emerald-900/30 rounded-xl transition-colors"
+          title="Project Assistant - Chat about your project"
+        >
+          <MessageCircle size={24} />
+        </button>
+        
+        {/* Help Button */}
+        <button 
+          onClick={openSplash}
+          className="p-3 text-theme-muted hover:text-theme-primary hover:bg-theme-tertiary rounded-xl transition-colors"
+          title="Help & Getting Started"
+        >
+          <HelpCircle size={24} />
         </button>
         
         {/* Connection Status */}
@@ -163,41 +199,35 @@ export function App() {
           <>
             {/* Left: Chat */}
             <div className="flex-1 min-w-0">
-              <ChatPanel messages={messages} agents={agents} />
+              <ChatPanel messages={messages} agents={agents} tokenStats={tokenStats} />
             </div>
             
             {/* Middle: Agents */}
-            <div className="w-64 hidden lg:block">
-              <AgentList agents={agents} onSelect={(a) => console.log(a)} />
+            <div className="w-72 hidden lg:block">
+              <AgentList 
+                agents={agents} 
+                tokenStats={tokenStats}
+                onSelectAgent={(a) => console.log('Selected agent:', a)} 
+                onSettingsClick={handleAgentSettingsClick}
+              />
             </div>
 
-            {/* Right: Tasks & Status */}
-            <div className="w-72 hidden xl:block border-l border-gray-800 bg-gray-900 flex flex-col">
-              <div className="p-4 border-b border-gray-800">
-                <div className="flex items-center justify-between mb-2">
-                  <h3 className="font-bold text-gray-200">Project Status</h3>
-                  {currentProjectName && (
-                    <span className="text-xs bg-blue-900/40 text-blue-300 px-2 py-1 rounded">
-                      {currentProjectName}
-                    </span>
-                  )}
-                </div>
-                <div className="text-xs text-gray-400 space-y-1">
-                  <div className="flex justify-between">
-                    <span>Round:</span> <span className="text-white">{status.round_number || 0}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>Tokens:</span> <span className="text-yellow-500">{status.total_tokens?.toLocaleString() || 0}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>Mode:</span> <span className={status.devussy_mode ? 'text-purple-400' : 'text-gray-400'}>
-                      {status.devussy_mode ? 'Devussy' : 'Standard'}
-                    </span>
-                  </div>
-                </div>
+            {/* Right: Dashboard & Tasks */}
+            <div className="w-80 hidden xl:block border-l border-theme bg-theme-secondary flex flex-col">
+              {/* Project Dashboard */}
+              <div className="p-3 border-b border-theme">
+                <ProjectDashboard 
+                  projectName={currentProjectName}
+                  status={status}
+                  tasks={tasks}
+                  agents={agents}
+                  tokenStats={tokenStats}
+                />
               </div>
+              
+              {/* Task Queue */}
               <div className="flex-1 overflow-hidden">
-                <TaskBoard tasks={tasks} />
+                <TaskBoard tasks={tasks} status={status} />
               </div>
             </div>
           </>
@@ -233,6 +263,31 @@ export function App() {
           projectName={currentProjectName}
           onClose={() => setShowDevussyPipeline(false)}
           onComplete={handleDevussyComplete}
+        />
+      )}
+
+      {/* Splash Screen */}
+      {showSplash && (
+        <SplashScreen onClose={closeSplash} />
+      )}
+
+      {/* Agent Settings Modal */}
+      {showAgentSettings && selectedAgent && (
+        <AgentSettingsPanel
+          agent={selectedAgent}
+          onClose={() => {
+            setShowAgentSettings(false);
+            setSelectedAgent(null);
+          }}
+          onSave={handleAgentSettingsSave}
+        />
+      )}
+
+      {/* Assistant Chat */}
+      {showAssistantChat && (
+        <AssistantChat
+          projectName={currentProjectName}
+          onClose={() => setShowAssistantChat(false)}
         />
       )}
     </div>

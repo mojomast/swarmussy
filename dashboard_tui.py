@@ -2156,6 +2156,7 @@ class SwarmDashboard(App):
             self.chat_log.write(Text("  /stop     - Stop current (Ctrl+X)", style="dim"))
             self.chat_log.write(Text("  /plan     - Refresh dashboard (Ctrl+P)", style="dim"))
             self.chat_log.write(Text("  /devplan  - Show raw devplan.md", style="dim"))
+            self.chat_log.write(Text("  /forcestart - Force regenerate task queue & start swarm", style="dim"))
             self.chat_log.write(Text("  /spawn <role> - Spawn agent", style="dim"))
             self.chat_log.write(Text("  /model    - View/change agent models", style="dim"))
             self.chat_log.write(Text("  /status   - Show status", style="dim"))
@@ -2195,6 +2196,8 @@ class SwarmDashboard(App):
                 self.chat_log.write(Text(f"Error reading devplan: {e}", style="red"))
         elif cmd == "/files":
             self.action_open_files()
+        elif cmd == "/forcestart":
+            await self.action_force_start()
         elif cmd == "/status":
             status = self.chatroom.get_status()
             tracker = get_token_tracker()
@@ -2287,6 +2290,45 @@ class SwarmDashboard(App):
     def action_refresh_plan(self):
         self.devplan_panel.refresh_plan()
         self.notify("Plan refreshed")
+
+    async def action_force_start(self):
+        """Force start the swarm by regenerating task queue and dispatching first tasks."""
+        from rich.text import Text
+        
+        self.chat_log.write(Text("🔄 Force starting swarm...", style="cyan bold"))
+        
+        try:
+            from core.devussy_integration import force_start_swarm
+            
+            success, message = force_start_swarm(Path(self.project.root))
+            
+            if success:
+                self.chat_log.write(Text(f"✅ {message}", style="green"))
+                
+                # Re-initialize orchestrator
+                if self.devussy_mode:
+                    try:
+                        from core.swarm_orchestrator import SwarmOrchestrator, set_orchestrator
+                        self.orchestrator = SwarmOrchestrator(Path(self.project.root))
+                        if await self.orchestrator.initialize():
+                            set_orchestrator(self.orchestrator)
+                            self.devplan_panel.set_orchestrator(self.orchestrator)
+                            self.chat_log.write(Text("📊 Orchestrator re-initialized", style="cyan"))
+                    except Exception as e:
+                        self.chat_log.write(Text(f"⚠️ Orchestrator reinit failed: {e}", style="yellow"))
+                
+                # Refresh panels
+                self.refresh_panels()
+                
+                # Prompt to dispatch
+                self.chat_log.write(Text("💡 Type 'go' to dispatch first tasks, or send a message to the Architect", style="yellow"))
+            else:
+                self.chat_log.write(Text(f"❌ {message}", style="red"))
+                
+        except ImportError:
+            self.chat_log.write(Text("❌ Devussy integration not available", style="red"))
+        except Exception as e:
+            self.chat_log.write(Text(f"❌ Force start failed: {e}", style="red"))
 
     def action_refresh(self):
         self.refresh_panels()
@@ -2527,6 +2569,7 @@ def select_project_cli() -> tuple[Project, str, bool, bool]:
     else:
         console.print("  [dim]No existing projects[/dim]")
     console.print(f"  [green]N.[/green] Create new project")
+    console.print(f"  [magenta]I.[/magenta] Import devplan from another project")
     console.print()
 
     choice = input("Choice (Enter for default): ").strip()
@@ -2535,6 +2578,55 @@ def select_project_cli() -> tuple[Project, str, bool, bool]:
         name = input("Project name: ").strip() or "default"
         desc = input("Description (optional): ").strip()
         project = pm.create_project(name, desc)
+    elif choice.upper() == "I":
+        # Import devplan from another project
+        try:
+            from core.devussy_integration import (
+                list_available_devplans_interactive,
+                import_devplan_to_project,
+            )
+            
+            source_info = list_available_devplans_interactive()
+            if source_info:
+                # Create new project or select existing
+                console.print("\n[bold]Where to import the devplan?[/bold]")
+                console.print("  [green]N.[/green] Create new project")
+                for i, proj in enumerate(projects, 1):
+                    console.print(f"  [yellow]{i}.[/yellow] {proj.name}")
+                
+                target_choice = input("\nChoice: ").strip()
+                
+                if target_choice.upper() == "N":
+                    name = input("New project name: ").strip() or "imported_project"
+                    project = pm.create_project(name)
+                elif target_choice.isdigit() and 0 < int(target_choice) <= len(projects):
+                    project = projects[int(target_choice) - 1]
+                else:
+                    console.print("[yellow]Cancelled[/yellow]")
+                    project = pm.create_project("default")
+                
+                # Import the devplan
+                success, msg = import_devplan_to_project(
+                    Path(source_info["path"]),
+                    Path(project.root),
+                )
+                if success:
+                    console.print(f"[green]✓ {msg}[/green]")
+                    devussy_mode = True
+                else:
+                    console.print(f"[red]✗ {msg}[/red]")
+            else:
+                console.print("[yellow]Import cancelled[/yellow]")
+                if projects:
+                    project = projects[0]
+                else:
+                    project = pm.create_project("default")
+        except ImportError:
+            console.print("[red]Devussy integration not available[/red]")
+            if projects:
+                project = projects[0]
+            else:
+                project = pm.create_project("default")
     elif choice.isdigit() and 0 < int(choice) <= len(projects):
         project = projects[int(choice) - 1]
     elif last_project and pm.project_exists(last_project):
@@ -2576,8 +2668,29 @@ def select_project_cli() -> tuple[Project, str, bool, bool]:
         
         if existing_devplan and existing_devplan.get("has_devplan"):
             console.print("[green]✓ Existing devplan found in project[/green]")
-            devussy_choice = input("Run Devussy pipeline? [y/N/use existing=Enter]: ").strip().lower()
-            if devussy_choice in ("y", "yes"):
+            console.print()
+            console.print("[bold]Options:[/bold]")
+            console.print("  [green]Enter[/green] - Use existing devplan")
+            console.print("  [cyan]F[/cyan] - Force start swarm (regenerate task queue, clear stale state)")
+            console.print("  [magenta]Y[/magenta] - Run fresh Devussy pipeline")
+            console.print("  [dim]N[/dim] - Skip devussy, normal swarm mode")
+            console.print()
+            devussy_choice = input("Choice [Enter]: ").strip().lower()
+            
+            if devussy_choice == "f":
+                # Force start - regenerate task queue and clear state
+                try:
+                    from core.devussy_integration import force_start_swarm
+                    console.print("\n[cyan]Force starting swarm...[/cyan]")
+                    success, message = force_start_swarm(Path(project.root))
+                    if success:
+                        console.print(f"[green]✓ {message}[/green]")
+                        devussy_mode = True
+                    else:
+                        console.print(f"[red]✗ {message}[/red]")
+                except Exception as e:
+                    console.print(f"[red]✗ Force start failed: {e}[/red]")
+            elif devussy_choice in ("y", "yes"):
                 # Let user select model for pipeline
                 devussy_model = select_devussy_model()
                 saved_model = devussy_model or settings.get("devussy_model")

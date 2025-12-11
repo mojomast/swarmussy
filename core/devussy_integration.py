@@ -1843,3 +1843,236 @@ def regenerate_task_queue_from_devplan(project_path: Path) -> bool:
     
     print(f"[RECOVER] Regenerated task_queue.md with {len(phases)} phases")
     return True
+
+
+# =============================================================================
+# PROJECT DISCOVERY AND DEVPLAN IMPORT
+# =============================================================================
+
+def find_all_projects_with_devplans() -> List[Dict[str, Any]]:
+    """Find all projects that have intact devussy pipelines.
+    
+    Scans the projects directory (scratch folder's parent) for projects
+    with devplan.md, phases.md, or phase files.
+    
+    Returns:
+        List of dicts with:
+        - name: Project name
+        - path: Full path to project
+        - devplan_path: Path to devplan.md
+        - phase_count: Number of phase files
+        - has_task_queue: Whether task_queue.md exists
+        - artifacts: List of available artifact files
+    """
+    from core.project_manager import get_project_manager
+    
+    pm = get_project_manager()
+    all_projects = pm.list_projects()
+    
+    projects_with_devplans = []
+    
+    for project in all_projects:
+        project_root = Path(project.root)
+        scratch_shared = project_root / "scratch" / "shared"
+        
+        # Check for devplan artifacts
+        devplan_path = scratch_shared / "devplan.md"
+        phases_dir = scratch_shared / "phases"
+        task_queue_path = scratch_shared / "task_queue.md"
+        
+        if not devplan_path.exists():
+            continue
+        
+        # Count phase files
+        phase_files = list(phases_dir.glob("phase*.md")) if phases_dir.exists() else []
+        
+        # List all artifacts
+        artifacts = []
+        for artifact_name in ["devplan.md", "project_design.md", "phases.md", "task_queue.md", "handoff.md"]:
+            if (scratch_shared / artifact_name).exists():
+                artifacts.append(artifact_name)
+        
+        projects_with_devplans.append({
+            "name": project.name,
+            "path": str(project_root),
+            "devplan_path": str(devplan_path),
+            "phase_count": len(phase_files),
+            "has_task_queue": task_queue_path.exists(),
+            "artifacts": artifacts,
+        })
+    
+    return projects_with_devplans
+
+
+def import_devplan_to_project(
+    source_project_path: Path,
+    target_project_path: Path,
+    regenerate_task_queue: bool = True,
+) -> Tuple[bool, str]:
+    """Import a devplan from one project to another.
+    
+    Copies all devussy artifacts (devplan.md, phases, etc.) from the source
+    project to the target project's scratch/shared folder.
+    
+    Args:
+        source_project_path: Path to source project with devplan
+        target_project_path: Path to target project  
+        regenerate_task_queue: If True, regenerate task_queue.md after import
+        
+    Returns:
+        Tuple of (success, message)
+    """
+    try:
+        source_shared = source_project_path / "scratch" / "shared"
+        target_shared = target_project_path / "scratch" / "shared"
+        
+        if not source_shared.exists():
+            return False, f"Source project has no devussy artifacts"
+        
+        target_shared.mkdir(parents=True, exist_ok=True)
+        
+        copied = []
+        
+        # Copy main artifacts
+        artifacts = ["devplan.md", "project_design.md", "phases.md", "handoff.md"]
+        for artifact in artifacts:
+            src = source_shared / artifact
+            if src.exists():
+                dst = target_shared / artifact
+                shutil.copy2(src, dst)
+                copied.append(artifact)
+        
+        # Copy phase files directory
+        source_phases = source_shared / "phases"
+        target_phases = target_shared / "phases"
+        
+        if source_phases.exists():
+            if target_phases.exists():
+                shutil.rmtree(target_phases)
+            shutil.copytree(source_phases, target_phases)
+            phase_count = len(list(target_phases.glob("phase*.md")))
+            copied.append(f"{phase_count} phase files")
+        
+        if not copied:
+            return False, "No artifacts found to copy"
+        
+        # Regenerate task queue for fresh start
+        if regenerate_task_queue:
+            try:
+                generate_swarm_task_queue(target_project_path)
+                copied.append("task_queue.md (regenerated)")
+            except Exception as e:
+                print(f"[WARN] Could not regenerate task queue: {e}")
+        
+        return True, f"Imported: {', '.join(copied)}"
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return False, f"Import failed: {e}"
+
+
+def force_start_swarm(project_path: Path) -> Tuple[bool, str]:
+    """Force start the swarm by regenerating task queue and preparing for dispatch.
+    
+    Use this when opening a pre-existing project that has trouble starting:
+    1. Regenerates task_queue.md from devplan/phases
+    2. Clears any stale task state
+    3. Returns instructions for manual dispatch
+    
+    Args:
+        project_path: Path to the project
+        
+    Returns:
+        Tuple of (success, message)
+    """
+    try:
+        scratch_shared = project_path / "scratch" / "shared"
+        
+        # Check for devplan
+        devplan_path = scratch_shared / "devplan.md"
+        if not devplan_path.exists():
+            return False, "No devplan.md found - run Devussy pipeline first"
+        
+        # Clear stale task state if present
+        task_state_path = scratch_shared / "task_state.json"
+        if task_state_path.exists():
+            # Backup old state
+            backup_path = scratch_shared / f"task_state_backup_{datetime.now().strftime('%H%M%S')}.json"
+            shutil.copy2(task_state_path, backup_path)
+            task_state_path.unlink()
+            print(f"[RESET] Cleared task state (backed up to {backup_path.name})")
+        
+        # Regenerate task queue
+        try:
+            generate_swarm_task_queue(project_path)
+        except Exception as e:
+            # Try recovery method
+            print(f"[WARN] Standard task queue generation failed: {e}")
+            if not regenerate_task_queue_from_devplan(project_path):
+                return False, "Could not generate task queue"
+        
+        # Check result
+        task_queue_path = scratch_shared / "task_queue.md"
+        if not task_queue_path.exists():
+            return False, "Task queue generation failed"
+        
+        # Count tasks
+        queue_content = task_queue_path.read_text(encoding="utf-8")
+        task_count = queue_content.lower().count("**status:**")
+        if task_count == 0:
+            task_count = queue_content.count("Task ")
+        
+        message = f"Swarm ready: {task_count} tasks in queue. Type 'go' to dispatch first tasks."
+        return True, message
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return False, f"Force start failed: {e}"
+
+
+def list_available_devplans_interactive() -> Optional[Dict[str, Any]]:
+    """Interactive selection of devplans from all projects.
+    
+    Shows a list of projects with devplans and lets user select one.
+    
+    Returns:
+        Selected project info dict or None if cancelled
+    """
+    projects = find_all_projects_with_devplans()
+    
+    if not projects:
+        print("\n❌ No projects with devplans found.")
+        print("   Run the Devussy pipeline on a project first.")
+        return None
+    
+    print("\n" + "=" * 60)
+    print("📋 AVAILABLE DEVPLANS")
+    print("=" * 60)
+    print()
+    
+    for i, proj in enumerate(projects, 1):
+        phase_info = f"{proj['phase_count']} phases" if proj['phase_count'] else "no phase files"
+        queue_status = "✓ task_queue" if proj['has_task_queue'] else "× no queue"
+        print(f"  {i}. {proj['name']}")
+        print(f"     {phase_info} | {queue_status}")
+        print(f"     Artifacts: {', '.join(proj['artifacts'])}")
+        print()
+    
+    print(f"  0. Cancel")
+    print()
+    
+    choice = input("Select devplan to import [0]: ").strip()
+    
+    if not choice or choice == "0":
+        return None
+    
+    try:
+        idx = int(choice) - 1
+        if 0 <= idx < len(projects):
+            return projects[idx]
+    except ValueError:
+        pass
+    
+    return None

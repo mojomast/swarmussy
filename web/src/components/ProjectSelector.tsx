@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'preact/hooks';
-import { fetchProjects, createProject, selectProject, deleteProject, fetchDevussyArtifacts } from '../lib/api';
+import { fetchProjects, createProject, selectProject, deleteProject, fetchDevussyArtifacts, fetchDevplanProjects, importDevplanToProject } from '../lib/api';
 import { FolderPlus, FolderOpen, Trash2, Play, RotateCcw, Sparkles, AlertCircle, Check, Loader2 } from 'lucide-preact';
 
 interface Project {
@@ -15,6 +15,15 @@ interface DevussyRun {
   artifacts: string[];
   stages_complete: string[];
   phase_count?: number;
+}
+
+interface DevplanProject {
+  name: string;
+  path: string;
+  devplan_path: string;
+  phase_count: number;
+  has_task_queue: boolean;
+  artifacts: string[];
 }
 
 interface Props {
@@ -33,6 +42,9 @@ export function ProjectSelector({ onProjectSelected, onResumeDevussy }: Props) {
   const [artifacts, setArtifacts] = useState<{ runs: DevussyRun[], checkpoints: any[] }>({ runs: [], checkpoints: [] });
   const [showResumeOptions, setShowResumeOptions] = useState(false);
   const [deleting, setDeleting] = useState<string | null>(null);
+  const [devplanProjects, setDevplanProjects] = useState<DevplanProject[]>([]);
+  const [loadingDevplans, setLoadingDevplans] = useState(false);
+  const [devplanError, setDevplanError] = useState('');
 
   useEffect(() => {
     loadProjects();
@@ -126,6 +138,41 @@ export function ProjectSelector({ onProjectSelected, onResumeDevussy }: Props) {
     onProjectSelected(selectedProject, true);
   };
 
+  const handleBrowseDevplans = async () => {
+    try {
+      setDevplanError('');
+      setLoadingDevplans(true);
+      const data = await fetchDevplanProjects();
+      setDevplanProjects((data.projects || []) as DevplanProject[]);
+    } catch (e) {
+      console.error('Failed to load devplans', e);
+      setDevplanError('Failed to load devplans');
+      setDevplanProjects([]);
+    } finally {
+      setLoadingDevplans(false);
+    }
+  };
+
+  const handleCreateFromDevplan = async (source: DevplanProject) => {
+    const suggested = `${source.name}-devplan`; 
+    const name = prompt('New project name from devplan:', suggested) || '';
+    const trimmed = name.trim();
+    if (!trimmed) return;
+
+    try {
+      setError('');
+      setCreating(true);
+      await createProject(trimmed, `Imported from devplan of ${source.name}`);
+      await importDevplanToProject(source.name, trimmed);
+      onProjectSelected(trimmed, false);
+    } catch (e: any) {
+      console.error('Failed to create from devplan', e);
+      setError(e.message || 'Failed to create project from devplan');
+    } finally {
+      setCreating(false);
+    }
+  };
+
   const handleResumeFromRun = (run: DevussyRun, stage: string) => {
     onResumeDevussy({
       type: 'run',
@@ -161,6 +208,55 @@ export function ProjectSelector({ onProjectSelected, onResumeDevussy }: Props) {
             <AlertCircle size={20} />
             <span>{error}</span>
             <button onClick={() => setError('')} className="ml-auto text-red-400 hover:text-red-300">×</button>
+          </div>
+        )}
+
+        {/* Devplan Browser */}
+        {loadingDevplans && (
+          <div className="mt-8 bg-gray-900 border border-gray-800 rounded-xl p-4 flex items-center gap-3 text-gray-300">
+            <Loader2 className="animate-spin text-purple-400" size={20} />
+            <span>Loading devplans from existing projects...</span>
+          </div>
+        )}
+        {devplanError && (
+          <div className="mt-4 p-3 bg-red-900/30 border border-red-700 rounded-lg text-sm text-red-300 flex items-center gap-2">
+            <AlertCircle size={16} />
+            <span>{devplanError}</span>
+          </div>
+        )}
+        {devplanProjects.length > 0 && !loadingDevplans && (
+          <div className="mt-8 bg-gray-900 border border-gray-800 rounded-xl p-6">
+            <h3 className="text-lg font-bold mb-3 flex items-center gap-2">
+              <Sparkles className="text-purple-400" size={20} />
+              Available Devplans
+            </h3>
+            <p className="text-xs text-gray-400 mb-4">
+              These projects have Devussy devplans and phases. Create a new swarm project from any of them.
+            </p>
+            <div className="space-y-3 max-h-64 overflow-y-auto">
+              {devplanProjects.map((p) => (
+                <div key={p.path} className="bg-gray-800 rounded-lg p-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                  <div>
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="font-medium text-blue-200">{p.name}</span>
+                      {p.has_task_queue && (
+                        <span className="text-[10px] bg-green-900/40 text-green-300 px-2 py-0.5 rounded">queue</span>
+                      )}
+                    </div>
+                    <div className="text-[11px] text-gray-400">
+                      {p.phase_count} phase file{p.phase_count === 1 ? '' : 's'} · {p.artifacts.join(', ')}
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => handleCreateFromDevplan(p)}
+                    className="text-xs bg-blue-600 hover:bg-blue-500 text-white px-3 py-1.5 rounded-lg flex items-center gap-1 self-start sm:self-auto"
+                  >
+                    <Sparkles size={14} />
+                    New Project from Devplan
+                  </button>
+                </div>
+              ))}
+            </div>
           </div>
         )}
 
@@ -290,6 +386,13 @@ export function ProjectSelector({ onProjectSelected, onResumeDevussy }: Props) {
                     Resume from Checkpoint ({artifacts.runs.length} runs)
                   </button>
                 )}
+                <button
+                  onClick={handleBrowseDevplans}
+                  className="w-full bg-gray-800 hover:bg-gray-700 text-white py-2 px-4 rounded-lg transition-colors flex items-center justify-center gap-2"
+                >
+                  <Sparkles size={18} />
+                  Browse Available Devplans
+                </button>
               </div>
             )}
           </div>

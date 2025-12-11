@@ -24,6 +24,7 @@ from core.project_manager import get_project_manager, Project
 from core.settings_manager import get_settings
 from core.models import Message, MessageRole
 from core.task_manager import get_task_manager
+from core.web_devussy_runner import WebDevussyRunner
 from config.settings import get_scratch_dir
 
 # Setup logging
@@ -64,12 +65,19 @@ class DevussyResumeRequest(BaseModel):
     resume_after: Optional[str] = None
     checkpoint_key: Optional[str] = None
 
+
+class DevplanImportRequest(BaseModel):
+    source_project_name: str
+    target_project_name: str
+
 # ─────────────────────────────────────────────────────────────────────────────
 # GLOBAL STATE
 # ─────────────────────────────────────────────────────────────────────────────
 
 controller: SessionController = get_session_controller()
 connected_websockets: List[WebSocket] = []
+devussy_websockets: List[WebSocket] = []
+devussy_runner: Optional[WebDevussyRunner] = None
 
 # ─────────────────────────────────────────────────────────────────────────────
 # LIFECYCLE & CALLBACKS
@@ -165,6 +173,20 @@ async def broadcast(data: Dict[str, Any]):
         if ws in connected_websockets:
             connected_websockets.remove(ws)
 
+
+async def broadcast_devussy(data: Dict[str, Any]):
+    """Send data to all Devussy websockets."""
+    to_remove = []
+    for ws in devussy_websockets:
+        try:
+            await ws.send_json(data)
+        except Exception:
+            to_remove.append(ws)
+    
+    for ws in to_remove:
+        if ws in devussy_websockets:
+            devussy_websockets.remove(ws)
+
 # ─────────────────────────────────────────────────────────────────────────────
 # APP SETUP
 # ─────────────────────────────────────────────────────────────────────────────
@@ -183,7 +205,7 @@ from datetime import datetime
 
 # ─────────────────────────────────────────────────────────────────────────────
 # WEBSOCKET
-# ─────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
 
 @app.websocket("/ws/chat")
 async def websocket_endpoint(websocket: WebSocket):
@@ -205,6 +227,28 @@ async def websocket_endpoint(websocket: WebSocket):
         logger.error(f"WebSocket error: {e}")
         if websocket in connected_websockets:
             connected_websockets.remove(websocket)
+
+
+@app.websocket("/ws/devussy")
+async def websocket_devussy_endpoint(websocket: WebSocket):
+    """WebSocket endpoint dedicated to the Devussy interview UI."""
+    await websocket.accept()
+    devussy_websockets.append(websocket)
+    try:
+        while True:
+            data = await websocket.receive_json()
+            # Messages from the Devussy UI are simple { type: "message", content: "..." }
+            if devussy_runner and data.get("type") == "message":
+                content = data.get("content", "")
+                if content:
+                    await devussy_runner.handle_input(content)
+    except WebSocketDisconnect:
+        if websocket in devussy_websockets:
+            devussy_websockets.remove(websocket)
+    except Exception as e:
+        logger.error(f"Devussy WebSocket error: {e}")
+        if websocket in devussy_websockets:
+            devussy_websockets.remove(websocket)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # API ROUTES
@@ -444,9 +488,11 @@ async def set_devussy_mode(request: Dict[str, bool] = Body(...)):
 @app.post("/api/devussy/start")
 async def start_devussy_pipeline(request: DevussyStartRequest):
     """Start the Devussy pipeline for current project."""
+    global devussy_runner
+
     if not controller.project:
         raise HTTPException(status_code=400, detail="No project selected")
-    
+
     # Store model preferences in settings
     settings = get_settings()
     if request.model:
@@ -458,12 +504,36 @@ async def start_devussy_pipeline(request: DevussyStartRequest):
     if request.devplan_model:
         settings.set("devplan_model", request.devplan_model, auto_save=False)
     settings.save()
-    
-    return {
-        "status": "started",
-        "project": controller.project.name,
-        "message": "Pipeline started. Use WebSocket /ws/devussy for real-time updates."
-    }
+
+    try:
+        # Create a fresh runner for this project
+        devussy_runner = WebDevussyRunner(Path(controller.project.root))
+
+        # Wire runner events to the Devussy WebSocket clients
+        async def on_devussy_message(payload: Dict[str, Any]) -> None:
+            await broadcast_devussy(payload)
+
+        devussy_runner.on_message = on_devussy_message
+
+        # Kick off the interview asynchronously
+        asyncio.create_task(
+            devussy_runner.start_interview(
+                {
+                    "interview_model": request.interview_model or request.model,
+                    "design_model": request.design_model or request.model,
+                    "devplan_model": request.devplan_model or request.model,
+                }
+            )
+        )
+
+        return {
+            "status": "started",
+            "project": controller.project.name,
+            "message": "Pipeline started. Use WebSocket /ws/devussy for real-time updates.",
+        }
+    except Exception as e:
+        logger.error(f"Failed to start Devussy pipeline: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/devussy/resume")
 async def resume_devussy(request: DevussyResumeRequest):
@@ -501,14 +571,17 @@ async def resume_devussy(request: DevussyResumeRequest):
 
 @app.post("/api/devussy/message")
 async def send_devussy_message(request: Dict[str, str] = Body(...)):
-    """Send a message to the Devussy interview."""
+    """Send a message to the Devussy interview (HTTP fallback)."""
     message = request.get("message", "")
     if not message:
         raise HTTPException(status_code=400, detail="Message required")
-    
-    # This would be handled by the WebSocket in a real implementation
-    # For now, just acknowledge
-    return {"status": "received", "message": message}
+
+    if devussy_runner:
+        asyncio.create_task(devussy_runner.handle_input(message))
+        return {"status": "received", "message": message}
+    else:
+        # Fallback if no runner active
+        return {"status": "error", "message": "Pipeline not active"}
 
 @app.post("/api/devussy/generate_queue")
 async def generate_queue():
@@ -522,6 +595,105 @@ async def generate_queue():
         return {"status": "ok", "message": "Task queue generated"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/devplans/projects")
+async def get_devplan_projects():
+    if not controller.project:
+        try:
+            from core.devussy_integration import find_all_projects_with_devplans
+            projects = find_all_projects_with_devplans()
+            return {"projects": projects}
+        except Exception as e:
+            logger.error(f"Failed to list devplan projects: {e}")
+            return {"projects": []}
+    try:
+        from core.devussy_integration import find_all_projects_with_devplans
+        projects = find_all_projects_with_devplans()
+        return {"projects": projects}
+    except Exception as e:
+        logger.error(f"Failed to list devplan projects: {e}")
+        return {"projects": []}
+
+
+@app.post("/api/devplans/import")
+async def import_devplan(request: DevplanImportRequest):
+    pm = get_project_manager()
+
+    if not pm.project_exists(request.source_project_name):
+        raise HTTPException(status_code=404, detail="Source project not found")
+    if not pm.project_exists(request.target_project_name):
+        raise HTTPException(status_code=404, detail="Target project not found")
+
+    source = pm.load_project(request.source_project_name)
+    target = pm.load_project(request.target_project_name)
+
+    try:
+        from core.devussy_integration import import_devplan_to_project
+
+        success, message = import_devplan_to_project(
+            Path(source.root),
+            Path(target.root),
+        )
+    except Exception as e:
+        logger.error(f"Devplan import failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+    if not success:
+        raise HTTPException(status_code=500, detail=message)
+
+    pm.set_current(target)
+
+    settings = get_settings()
+    username = settings.get("username", "User")
+    settings.set("devussy_mode", True, auto_save=False)
+    settings.save()
+
+    await controller.shutdown()
+    await controller.initialize(
+        project=target,
+        username=username,
+        load_history=False,
+        devussy_mode=True,
+    )
+
+    return {"status": "ok", "message": message, "project": target.name}
+
+
+@app.post("/api/devplans/force_start")
+async def force_start_devplan():
+    if not controller.project:
+        raise HTTPException(status_code=400, detail="No project selected")
+
+    try:
+        from core.devussy_integration import force_start_swarm
+
+        success, message = force_start_swarm(Path(controller.project.root))
+    except Exception as e:
+        logger.error(f"Force start failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+    if not success:
+        raise HTTPException(status_code=500, detail=message)
+
+    settings = get_settings()
+    username = settings.get("username", "User")
+    settings.set("devussy_mode", True, auto_save=False)
+    settings.save()
+
+    await controller.shutdown()
+    await controller.initialize(
+        project=controller.project,
+        username=username,
+        load_history=True,
+        devussy_mode=True,
+    )
+
+    return {
+        "status": "ok",
+        "message": message,
+        "devussy_mode": controller.is_devussy_mode,
+    }
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PROVIDERS & MODELS
@@ -724,6 +896,146 @@ async def get_history():
     if not controller.chatroom:
         return {"messages": []}
     return {"messages": [m.to_dict() for m in controller.chatroom.state.messages]}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AGENT CONFIGURATION
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.get("/api/agents/{agent_id}/config")
+async def get_agent_config(agent_id: str):
+    """Get configuration for a specific agent."""
+    if not controller.chatroom:
+        raise HTTPException(status_code=400, detail="No active session")
+    
+    # Find agent by ID
+    agent = None
+    for a in controller.chatroom.state.agents:
+        if a.agent_id == agent_id:
+            agent = a
+            break
+    
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    
+    return {
+        "agent_id": agent.agent_id,
+        "name": agent.name,
+        "model": getattr(agent, 'model', 'openrouter/anthropic/claude-sonnet-4'),
+        "max_tokens": getattr(agent, 'max_tokens', 16000),
+        "max_tool_retries": getattr(agent, 'max_tool_retries', 3),
+        "temperature": getattr(agent, 'temperature', 0.7),
+        "timeout_seconds": getattr(agent, 'timeout_seconds', 120),
+        "enabled": getattr(agent, 'enabled', True),
+        "status": agent.status,
+        "message_count": getattr(agent, 'message_count', 0),
+        "tool_call_count": getattr(agent, 'tool_call_count', 0),
+        "tokens_used": getattr(agent, 'tokens_used', 0)
+    }
+
+@app.post("/api/agents/{agent_id}/config")
+async def update_agent_config(agent_id: str, config: Dict[str, Any] = Body(...)):
+    """Update configuration for a specific agent."""
+    if not controller.chatroom:
+        raise HTTPException(status_code=400, detail="No active session")
+    
+    # Find agent by ID
+    agent = None
+    for a in controller.chatroom.state.agents:
+        if a.agent_id == agent_id:
+            agent = a
+            break
+    
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    
+    # Update agent attributes
+    allowed_keys = ['model', 'max_tokens', 'max_tool_retries', 'temperature', 'timeout_seconds', 'enabled']
+    for key in allowed_keys:
+        if key in config:
+            setattr(agent, key, config[key])
+    
+    return {"status": "ok", "agent_id": agent_id}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ASSISTANT CHAT
+# ─────────────────────────────────────────────────────────────────────────────
+
+class AssistantChatRequest(BaseModel):
+    message: str
+
+@app.post("/api/assistant/chat")
+async def assistant_chat(request: AssistantChatRequest):
+    """Chat with a project-aware assistant."""
+    if not controller.project:
+        raise HTTPException(status_code=400, detail="No project selected")
+    
+    try:
+        # Build context from project files
+        project_root = Path(controller.project.root)
+        shared_dir = project_root / "scratch" / "shared"
+        
+        context_parts = []
+        
+        # Read devplan if exists
+        devplan_path = shared_dir / "devplan.md"
+        if devplan_path.exists():
+            context_parts.append(f"## DEVPLAN\n{devplan_path.read_text()[:5000]}")
+        
+        # Read phases if exists
+        phases_path = shared_dir / "phases.md"
+        if phases_path.exists():
+            context_parts.append(f"## PHASES\n{phases_path.read_text()[:3000]}")
+        
+        # Read task queue if exists
+        task_queue_path = shared_dir / "task_queue.md"
+        if task_queue_path.exists():
+            context_parts.append(f"## TASK QUEUE\n{task_queue_path.read_text()[:3000]}")
+        
+        # Get current task state
+        task_state = controller.get_tasks()
+        if task_state:
+            completed = [t for t in task_state if t.get('status') == 'completed']
+            in_progress = [t for t in task_state if t.get('status') == 'in_progress']
+            context_parts.append(f"## CURRENT STATE\nCompleted: {len(completed)}, In Progress: {len(in_progress)}, Total: {len(task_state)}")
+        
+        context = "\n\n".join(context_parts) if context_parts else "No project context available."
+        
+        # Use LLM to generate response
+        from core.llm_client import get_llm_client
+        
+        client = get_llm_client()
+        settings = get_settings()
+        model = settings.get("architect_model", "openrouter/anthropic/claude-sonnet-4")
+        
+        system_prompt = f"""You are a helpful project assistant for the "{controller.project.name}" project.
+You have access to the project's devplan, phases, and task state.
+Help the user understand the project, answer questions, and suggest improvements.
+You can also help them request task changes or iterations.
+
+PROJECT CONTEXT:
+{context}
+
+Be concise but helpful. If asked to make changes to tasks or phases, explain what changes would be needed."""
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": request.message}
+        ]
+        
+        response = await client.chat_completion(
+            model=model,
+            messages=messages,
+            max_tokens=2000,
+            temperature=0.7
+        )
+        
+        assistant_message = response.choices[0].message.content if response.choices else "I couldn't generate a response."
+        
+        return {"response": assistant_message, "message": assistant_message}
+        
+    except Exception as e:
+        logger.error(f"Assistant chat error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ─────────────────────────────────────────────────────────────────────────────
 # STATIC FILES (Production)

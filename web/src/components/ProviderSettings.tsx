@@ -125,6 +125,57 @@ export function ProviderSettings({ onClose }: Props) {
     }
   };
 
+  // Helper to get the API source provider label for a model
+  const getProviderLabel = (modelId: string): string => {
+    if (!modelId) return '';
+    // Find the model in our list to get its actual API provider
+    const model = models.find(m => m.id === modelId);
+    if (model?.provider) {
+      const labels: Record<string, string> = {
+        'requesty': 'Requesty',
+        'zai': 'Z.AI',
+        'openai': 'OpenAI Direct',
+        'anthropic': 'Anthropic Direct',
+        'fallback': 'Fallback',
+      };
+      return labels[model.provider] || model.provider;
+    }
+    return '';
+  };
+
+  // Helper to get the model vendor (for display in option text)
+  const getModelVendor = (modelId: string): string => {
+    if (!modelId) return '';
+    if (modelId.includes('/')) {
+      const vendor = modelId.split('/')[0].toLowerCase();
+      const labels: Record<string, string> = {
+        'anthropic': 'Anthropic',
+        'openai': 'OpenAI',
+        'google': 'Google',
+        'meta': 'Meta',
+        'mistral': 'Mistral',
+        'cohere': 'Cohere',
+        'deepseek': 'DeepSeek',
+        'x-ai': 'xAI',
+      };
+      return labels[vendor] || vendor.charAt(0).toUpperCase() + vendor.slice(1);
+    }
+    // Z.AI GLM models
+    if (modelId.startsWith('glm-')) return 'Z.AI';
+    return '';
+  };
+
+  const getProviderColor = (provider: string): string => {
+    const colors: Record<string, string> = {
+      'Requesty': 'bg-purple-900/40 text-purple-300',
+      'Z.AI': 'bg-cyan-900/40 text-cyan-300',
+      'OpenAI Direct': 'bg-green-900/40 text-green-300',
+      'Anthropic Direct': 'bg-orange-900/40 text-orange-300',
+      'Fallback': 'bg-gray-700 text-gray-400',
+    };
+    return colors[provider] || 'bg-gray-700 text-gray-300';
+  };
+
   const ModelSelect = ({ 
     settingKey, 
     label, 
@@ -133,29 +184,44 @@ export function ProviderSettings({ onClose }: Props) {
     settingKey: string; 
     label: string; 
     description?: string;
-  }) => (
-    <div className="bg-gray-800 rounded-lg p-4">
-      <div className="flex items-center justify-between mb-2">
-        <label className="font-medium text-white">{label}</label>
+  }) => {
+    const currentValue = settings[settingKey] || '';
+    const selectedProvider = getProviderLabel(currentValue);
+    
+    return (
+      <div className="bg-gray-800 rounded-lg p-4">
+        <div className="flex items-center justify-between mb-2">
+          <label className="font-medium text-white">{label}</label>
+          {selectedProvider && (
+            <span className={`text-xs px-2 py-0.5 rounded ${getProviderColor(selectedProvider)}`}>
+              {selectedProvider}
+            </span>
+          )}
+        </div>
+        {description && (
+          <p className="text-xs text-gray-500 mb-2">{description}</p>
+        )}
+        <div className="relative">
+          <select
+            value={currentValue}
+            onChange={(e) => handleUpdateSetting(settingKey, e.currentTarget.value)}
+            className="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-2 text-white appearance-none focus:outline-none focus:ring-2 focus:ring-blue-500"
+          >
+            <option value="">Use default</option>
+            {models.map((m) => {
+              const vendor = getModelVendor(m.id);
+              return (
+                <option key={m.id} value={m.id}>
+                  {vendor ? `${vendor}: ` : ''}{m.name || m.id}
+                </option>
+              );
+            })}
+          </select>
+          <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" size={16} />
+        </div>
       </div>
-      {description && (
-        <p className="text-xs text-gray-500 mb-2">{description}</p>
-      )}
-      <div className="relative">
-        <select
-          value={settings[settingKey] || ''}
-          onChange={(e) => handleUpdateSetting(settingKey, e.currentTarget.value)}
-          className="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-2 text-white appearance-none focus:outline-none focus:ring-2 focus:ring-blue-500"
-        >
-          <option value="">Use default</option>
-          {models.map((m) => (
-            <option key={m.id} value={m.id}>{m.name || m.id}</option>
-          ))}
-        </select>
-        <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" size={16} />
-      </div>
-    </div>
-  );
+    );
+  };
 
   if (loading) {
     return (
